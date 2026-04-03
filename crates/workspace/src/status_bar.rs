@@ -7,6 +7,8 @@ pub struct StatusBar {
     pub branch_name: String,
     pub agent_count: usize,
     pub status_message: String,
+    pub update_version: Option<String>,
+    pub on_update_click: Option<Box<dyn Fn(&mut Window, &mut App) + 'static>>,
 }
 
 impl StatusBar {
@@ -15,6 +17,8 @@ impl StatusBar {
             branch_name: "main".to_string(),
             agent_count: 0,
             status_message: String::new(),
+            update_version: None,
+            on_update_click: None,
         }
     }
 
@@ -32,7 +36,7 @@ impl StatusBar {
 }
 
 impl Render for StatusBar {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
             .flex_row()
@@ -45,15 +49,48 @@ impl Render for StatusBar {
             .px(px(12.))
             .text_xs()
             .text_color(theme::subtext())
-            // Left: branch name
+            // Left: update button OR branch name
             .child(
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap(px(4.))
-                    .child("⎇")
-                    .child(self.branch_name.clone()),
+                    .gap(px(8.))
+                    // Update button (if available)
+                    .when_some(self.update_version.clone(), |d: Div, version| {
+                        d.child(
+                            div()
+                                .id("update-btn")
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(4.))
+                                .px(px(6.))
+                                .py(px(1.))
+                                .bg(theme::surface0())
+                                .rounded(px(4.))
+                                .cursor_pointer()
+                                .text_color(theme::text())
+                                .hover(|d| d.bg(theme::surface1()))
+                                .child("↓")
+                                .child(format!("Restart to Update (v{})", version))
+                                .on_click(cx.listener(|this, _ev, window, cx| {
+                                    if let Some(cb) = &this.on_update_click {
+                                        cb(window, cx);
+                                    }
+                                })),
+                        )
+                    })
+                    // Branch name
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(4.))
+                            .child("⎇")
+                            .child(self.branch_name.clone()),
+                    ),
             )
             // Center: status message
             .child(
@@ -62,7 +99,7 @@ impl Render for StatusBar {
                     .text_center()
                     .child(self.status_message.clone()),
             )
-            // Right: agent count
+            // Right: agent count + version
             .child(
                 div()
                     .flex()
@@ -70,7 +107,7 @@ impl Render for StatusBar {
                     .items_center()
                     .gap(px(8.))
                     .child(format!("Agents: {}", self.agent_count))
-                    .child("Forge v0.4"),
+                    .child("Forge v0.5"),
             )
     }
 }

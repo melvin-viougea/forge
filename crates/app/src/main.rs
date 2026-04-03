@@ -289,74 +289,15 @@ struct AppView {
     workspace: Entity<IdeWorkspace>,
     project_panel: Entity<ProjectPanel>,
     terminal_count: usize,
-    update_available: Option<updater::UpdateInfo>,
-    update_status: Option<String>,
     _pane_subscription: Subscription,
     _project_subscription: Subscription,
     _update_task: Task<()>,
 }
 
 impl Render for AppView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
-            .flex()
-            .flex_col()
             .size_full()
-            // Update banner at the very top
-            .when_some(self.update_available.clone(), |d: Div, info| {
-                d.child(
-                    div()
-                        .id("update-banner")
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .justify_center()
-                        .w_full()
-                        .h(px(28.))
-                        .flex_shrink_0()
-                        .bg(rgb(0x1e6f3f))
-                        .cursor_pointer()
-                        .text_xs()
-                        .text_color(rgb(0xffffff))
-                        .gap(px(8.))
-                        .child(format!("Forge v{} available", info.version))
-                        .child(
-                            div()
-                                .px(px(8.))
-                                .py(px(2.))
-                                .bg(rgb(0xffffff))
-                                .text_color(rgb(0x1e6f3f))
-                                .rounded(px(4.))
-                                .font_weight(FontWeight::BOLD)
-                                .child("Restart to Update"),
-                        )
-                        .on_click(cx.listener(|this, _ev, _window, cx| {
-                            if let Some(info) = &this.update_available {
-                                this.update_status = Some("Downloading...".to_string());
-                                cx.notify();
-
-                                let info = info.clone();
-                                cx.spawn(async |this: WeakEntity<AppView>, cx: &mut AsyncApp| {
-                                    let result = cx.background_executor().spawn(async move {
-                                        updater::download_and_install(&info)
-                                    }).await;
-
-                                    match result {
-                                        Ok(()) => {
-                                            updater::relaunch();
-                                        }
-                                        Err(e) => {
-                                            this.update(cx, |view, cx| {
-                                                view.update_status = Some(format!("Update failed: {}", e));
-                                                cx.notify();
-                                            }).ok();
-                                        }
-                                    }
-                                }).detach();
-                            }
-                        })),
-                )
-            })
             .child(self.workspace.clone())
     }
 }
@@ -388,11 +329,7 @@ fn main() {
                 let project_panel_for_dock = project_panel.clone();
                 workspace.update(cx, |ws, cx| {
                     ws.left_dock.update(cx, |dock, _cx| {
-                        dock.add_panel(
-                            "Projects".to_string(),
-                            "> ",
-                            AnyView::from(project_panel_for_dock),
-                        );
+                        dock.set_view(AnyView::from(project_panel_for_dock));
                     });
                 });
 
@@ -413,11 +350,7 @@ fn main() {
                 let right_panel = cx.new(|cx| RightPanel::new(root_path.clone(), cx));
                 workspace.update(cx, |ws, cx| {
                     ws.right_dock.update(cx, |dock, _cx| {
-                        dock.add_panel(
-                            "Git & Files".to_string(),
-                            "* ",
-                            AnyView::from(right_panel),
-                        );
+                        dock.set_view(AnyView::from(right_panel));
                     });
                 });
 
@@ -502,16 +435,28 @@ fn main() {
                     });
 
                     // Check for updates on startup (after 3s delay)
-                    let update_task = cx.spawn(async |this: WeakEntity<AppView>, cx: &mut AsyncApp| {
+                    let status_bar_for_update = workspace.read(cx).status_bar.clone();
+                    let update_task = cx.spawn(async |_this: WeakEntity<AppView>, cx: &mut AsyncApp| {
+                        let status_bar = status_bar_for_update;
                         cx.background_executor().timer(Duration::from_secs(3)).await;
                         let update_info = cx.background_executor().spawn(async {
                             updater::check_for_update()
                         }).await;
 
                         if let Some(info) = update_info {
-                            this.update(cx, |view, cx| {
-                                view.update_available = Some(info);
-                                cx.notify();
+                            let version = info.version.clone();
+                            let info_for_click = info.clone();
+                            status_bar.update(cx, |bar, _cx| {
+                                bar.update_version = Some(version);
+                                bar.on_update_click = Some(Box::new(move |_window, _cx| {
+                                    let info = info_for_click.clone();
+                                    // Download and install in background
+                                    std::thread::spawn(move || {
+                                        if updater::download_and_install(&info).is_ok() {
+                                            updater::relaunch();
+                                        }
+                                    });
+                                }));
                             }).ok();
                         }
                     });
@@ -520,8 +465,6 @@ fn main() {
                         workspace,
                         project_panel: project_panel,
                         terminal_count: 1,
-                        update_available: None,
-                        update_status: None,
                         _pane_subscription: pane_sub,
                         _project_subscription: project_sub,
                         _update_task: update_task,

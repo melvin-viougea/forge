@@ -1,6 +1,6 @@
 use std::process::Command;
 
-pub const CURRENT_VERSION: &str = "0.4.0";
+pub const CURRENT_VERSION: &str = "0.5.0";
 const GITHUB_REPO: &str = "melvin-viougea/forge";
 
 #[derive(Clone, Debug)]
