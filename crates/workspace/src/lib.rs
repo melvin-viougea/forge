@@ -1,11 +1,9 @@
 pub mod dock;
 pub mod pane;
-pub mod status_bar;
 pub mod workspace;
 
 pub use dock::*;
 pub use pane::*;
-pub use status_bar::*;
 pub use workspace::*;
 
 // Catppuccin Mocha color palette

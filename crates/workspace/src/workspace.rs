@@ -3,38 +3,38 @@ use gpui::prelude::*;
 
 use crate::dock::{Dock, DockPosition};
 use crate::pane::Pane;
-use crate::status_bar::StatusBar;
 use crate::theme;
 
-/// Main workspace: 3-panel layout
-/// Left: Projects sidebar
-/// Center: Tabbed panes (terminals, editors, previews)
-/// Right: Git commit (top) + File tree / Git changes (bottom)
 pub struct IdeWorkspace {
     pub left_dock: Entity<Dock>,
     pub center_pane: Entity<Pane>,
     pub right_dock: Entity<Dock>,
-    pub status_bar: Entity<StatusBar>,
+    pub update_version: Option<String>,
 }
+
+pub enum WorkspaceEvent {
+    UpdateClicked,
+}
+
+impl EventEmitter<WorkspaceEvent> for IdeWorkspace {}
 
 impl IdeWorkspace {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let left_dock = cx.new(|_cx| Dock::new(DockPosition::Left, 200.));
         let center_pane = cx.new(|_cx| Pane::new());
         let right_dock = cx.new(|_cx| Dock::new(DockPosition::Right, 280.));
-        let status_bar = cx.new(|_cx| StatusBar::new());
 
         Self {
             left_dock,
             center_pane,
             right_dock,
-            status_bar,
+            update_version: None,
         }
     }
 }
 
 impl Render for IdeWorkspace {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
             .flex_col()
@@ -42,8 +42,58 @@ impl Render for IdeWorkspace {
             .bg(theme::base())
             .text_color(theme::text())
             .font_family("Berkeley Mono, SF Mono, Menlo, monospace")
-            // Titlebar spacer for macOS transparent titlebar
-            .pt(px(28.))
+            // Titlebar with update button (left) and app name (right)
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .w_full()
+                    .h(px(28.))
+                    .flex_shrink_0()
+                    .bg(theme::mantle())
+                    // Left: leave space for traffic lights + update button
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .pl(px(78.))
+                            .gap(px(8.))
+                            .when_some(self.update_version.clone(), |d: Div, version| {
+                                d.child(
+                                    div()
+                                        .id("update-btn")
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap(px(4.))
+                                        .px(px(8.))
+                                        .py(px(2.))
+                                        .bg(theme::surface0())
+                                        .rounded(px(4.))
+                                        .cursor_pointer()
+                                        .text_xs()
+                                        .text_color(theme::text())
+                                        .hover(|d| d.bg(theme::surface1()))
+                                        .child("↓ Restart to Update")
+                                        .on_click(cx.listener(|_this, _ev, _window, cx| {
+                                            cx.emit(WorkspaceEvent::UpdateClicked);
+                                        })),
+                                )
+                            }),
+                    )
+                    // Center spacer
+                    .child(div().flex_1())
+                    // Right: app name + version
+                    .child(
+                        div()
+                            .pr(px(12.))
+                            .text_xs()
+                            .text_color(theme::subtext())
+                            .child("Forge v0.7"),
+                    ),
+            )
             // Main content row: left dock | center | right dock
             .child(
                 div()
@@ -51,9 +101,7 @@ impl Render for IdeWorkspace {
                     .flex_row()
                     .flex_1()
                     .overflow_hidden()
-                    // Left dock (Projects)
                     .child(self.left_dock.clone())
-                    // Center pane (Tabs: terminals, files, MD preview)
                     .child(
                         div()
                             .flex_1()
@@ -62,10 +110,7 @@ impl Render for IdeWorkspace {
                             .overflow_hidden()
                             .child(self.center_pane.clone()),
                     )
-                    // Right dock (Git + Files)
                     .child(self.right_dock.clone()),
             )
-            // Status bar
-            .child(self.status_bar.clone())
     }
 }
