@@ -14,6 +14,13 @@ struct ProjectPanel {
     active_project: usize,
 }
 
+impl EventEmitter<ProjectPanelEvent> for ProjectPanel {}
+
+enum ProjectPanelEvent {
+    AddProjectRequested,
+    ProjectSelected(PathBuf),
+}
+
 struct ProjectEntry {
     name: String,
     path: PathBuf,
@@ -120,6 +127,8 @@ impl Render for ProjectPanel {
                     )
                     .on_click(cx.listener(move |this, _ev, _window, cx| {
                         this.active_project = idx;
+                        let path = this.projects[idx].path.clone();
+                        cx.emit(ProjectPanelEvent::ProjectSelected(path));
                         cx.notify();
                     }))
             }))
@@ -141,7 +150,10 @@ impl Render for ProjectPanel {
                             .cursor_pointer()
                             .text_color(colors::subtext())
                             .hover(|d| d.bg(colors::surface1()).text_color(colors::text()))
-                            .child("+ Add Project"),
+                            .child("+ Add Project")
+                            .on_click(cx.listener(|_this, _ev, _window, cx| {
+                                cx.emit(ProjectPanelEvent::AddProjectRequested);
+                            })),
                     ),
             )
     }
@@ -158,20 +170,22 @@ struct RightPanel {
 impl RightPanel {
     fn new(root_path: PathBuf, cx: &mut Context<Self>) -> Self {
         let commit_panel = cx.new(|_cx| CommitPanel::new(root_path.clone()));
-        let file_explorer = cx.new(|_cx| FileExplorerPanel::new(root_path.clone()));
-        let git_changes = cx.new(|_cx| GitChangesPanel::new(root_path));
+        let file_explorer = cx.new(|cx| FileExplorerPanel::new(root_path.clone(), cx));
+        let git_changes = cx.new(|cx| GitChangesPanel::new(root_path, cx));
 
         Self {
             commit_panel,
             file_explorer,
             git_changes,
-            show_files: true,
+            show_files: false,
         }
     }
 }
 
 impl Render for RightPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let change_count = self.git_changes.read(cx).change_count();
+
         div()
             .flex()
             .flex_col()
@@ -186,7 +200,7 @@ impl Render for RightPanel {
                     .h(px(1.))
                     .bg(colors::surface1()),
             )
-            // Toggle bar: Files | Changes
+            // Toggle bar: Changes | Files (Changes first, default active)
             .child(
                 div()
                     .flex()
@@ -196,6 +210,32 @@ impl Render for RightPanel {
                     .bg(colors::mantle())
                     .border_b_1()
                     .border_color(colors::surface1())
+                    // Changes tab (first, default)
+                    .child(
+                        div()
+                            .id("tab-changes")
+                            .flex()
+                            .flex_1()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .text_xs()
+                            .when(!self.show_files, |d: Stateful<Div>| {
+                                d.text_color(colors::text())
+                                    .border_b_2()
+                                    .border_color(colors::blue())
+                            })
+                            .when(self.show_files, |d: Stateful<Div>| {
+                                d.text_color(colors::subtext())
+                                    .hover(|d| d.text_color(colors::text()))
+                            })
+                            .child(format!("Changes ({})", change_count))
+                            .on_click(cx.listener(|this, _ev, _window, cx| {
+                                this.show_files = false;
+                                cx.notify();
+                            })),
+                    )
+                    // Files tab (second)
                     .child(
                         div()
                             .id("tab-files")
@@ -219,42 +259,18 @@ impl Render for RightPanel {
                                 this.show_files = true;
                                 cx.notify();
                             })),
-                    )
-                    .child(
-                        div()
-                            .id("tab-changes")
-                            .flex()
-                            .flex_1()
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .text_xs()
-                            .when(!self.show_files, |d: Stateful<Div>| {
-                                d.text_color(colors::text())
-                                    .border_b_2()
-                                    .border_color(colors::blue())
-                            })
-                            .when(self.show_files, |d: Stateful<Div>| {
-                                d.text_color(colors::subtext())
-                                    .hover(|d| d.text_color(colors::text()))
-                            })
-                            .child("Changes")
-                            .on_click(cx.listener(|this, _ev, _window, cx| {
-                                this.show_files = false;
-                                cx.notify();
-                            })),
                     ),
             )
-            // Bottom: File explorer or Git changes
+            // Bottom: Changes or Files
             .child(
                 div()
                     .flex_1()
                     .overflow_hidden()
-                    .when(self.show_files, |d: Div| {
-                        d.child(self.file_explorer.clone())
-                    })
                     .when(!self.show_files, |d: Div| {
                         d.child(self.git_changes.clone())
+                    })
+                    .when(self.show_files, |d: Div| {
+                        d.child(self.file_explorer.clone())
                     }),
             )
     }
@@ -263,8 +279,10 @@ impl Render for RightPanel {
 /// Root application view
 struct AppView {
     workspace: Entity<IdeWorkspace>,
+    project_panel: Entity<ProjectPanel>,
     terminal_count: usize,
     _pane_subscription: Subscription,
+    _project_subscription: Subscription,
 }
 
 impl Render for AppView {
@@ -299,12 +317,13 @@ fn main() {
 
                 // Setup left dock: Project panel
                 let project_panel = cx.new(|_cx| ProjectPanel::new());
+                let project_panel_for_dock = project_panel.clone();
                 workspace.update(cx, |ws, cx| {
                     ws.left_dock.update(cx, |dock, _cx| {
                         dock.add_panel(
                             "Projects".to_string(),
                             "> ",
-                            AnyView::from(project_panel),
+                            AnyView::from(project_panel_for_dock),
                         );
                     });
                 });
@@ -367,10 +386,59 @@ fn main() {
                         }
                     });
 
+                    // Subscribe to project panel events
+                    let project_sub = cx.subscribe(&project_panel, |this: &mut AppView, _panel, event: &ProjectPanelEvent, cx| {
+                        match event {
+                            ProjectPanelEvent::AddProjectRequested => {
+                                let receiver = cx.prompt_for_paths(PathPromptOptions {
+                                    files: false,
+                                    directories: true,
+                                    multiple: false,
+                                    prompt: Some("Select project folder".into()),
+                                });
+
+                                let project_panel_async = this.project_panel.clone();
+                                cx.spawn(async |_this: WeakEntity<AppView>, cx: &mut AsyncApp| {
+                                    let project_panel = project_panel_async;
+                                    if let Ok(Ok(Some(paths))) = receiver.await {
+                                        if let Some(path) = paths.first() {
+                                            let path = path.clone();
+                                            let name = path
+                                                .file_name()
+                                                .map(|n| n.to_string_lossy().to_string())
+                                                .unwrap_or_else(|| "Project".to_string());
+                                            project_panel.update(cx, |panel, cx| {
+                                                panel.projects.push(ProjectEntry {
+                                                    name,
+                                                    path: path.clone(),
+                                                });
+                                                panel.active_project = panel.projects.len() - 1;
+                                                cx.emit(ProjectPanelEvent::ProjectSelected(path));
+                                                cx.notify();
+                                            }).ok();
+                                        }
+                                    }
+                                }).detach();
+                            }
+                            ProjectPanelEvent::ProjectSelected(path) => {
+                                // Update file explorer and git status for the selected project
+                                let branch = ide_git_panel::get_branch_name(path);
+                                this.workspace.update(cx, |ws, cx| {
+                                    ws.status_bar.update(cx, |bar, _cx| {
+                                        bar.set_branch(branch);
+                                    });
+                                });
+                                cx.notify();
+                            }
+                        }
+                    });
+
                     AppView {
                         workspace,
+                        project_panel: project_panel,
                         terminal_count: 1,
                         _pane_subscription: pane_sub,
+                        _project_subscription: project_sub,
                     }
                 })
             },

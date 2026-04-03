@@ -27,7 +27,7 @@ impl FileEntry {
             if self.expanded { "v " } else { "> " }
         } else {
             match self.path.extension().and_then(|e| e.to_str()) {
-                Some("rs") => "# " ,
+                Some("rs") => "# ",
                 Some("toml") => "@ ",
                 Some("md") => "M ",
                 Some("json") => "{ ",
@@ -54,21 +54,13 @@ pub fn build_file_tree(root: &Path, depth: usize, max_depth: usize) -> Vec<FileE
         .max_depth(Some(1))
         .hidden(false)
         .git_ignore(true)
-        .sort_by_file_name(|a, b| {
-            // Directories first, then alphabetical
-            let a_is_dir = a.to_str().map_or(false, |_| true);
-            let b_is_dir = b.to_str().map_or(false, |_| true);
-            match (a_is_dir, b_is_dir) {
-                _ => a.cmp(b),
-            }
-        })
+        .sort_by_file_name(|a, b| a.cmp(b))
         .build();
 
     for result in walker {
         if let Ok(entry) = result {
             let path = entry.path().to_path_buf();
 
-            // Skip the root itself
             if path == root {
                 continue;
             }
@@ -79,11 +71,10 @@ pub fn build_file_tree(root: &Path, depth: usize, max_depth: usize) -> Vec<FileE
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
 
-            // Skip hidden dirs, build artifacts, and common noise
+            // Skip hidden dirs, build artifacts
             if is_dir && (name.starts_with('.') || name == "target" || name == "node_modules") {
                 continue;
             }
-            // Skip hidden files
             if !is_dir && name.starts_with('.') {
                 continue;
             }
@@ -112,31 +103,71 @@ pub fn build_file_tree(root: &Path, depth: usize, max_depth: usize) -> Vec<FileE
     entries
 }
 
-/// Get git statuses for files in a directory
+/// Get git statuses for ALL files in the repo, keyed by absolute path.
+/// Also propagates status to parent directories.
 pub fn get_git_statuses(root: &Path) -> std::collections::HashMap<PathBuf, GitFileStatus> {
     let mut statuses = std::collections::HashMap::new();
 
-    if let Ok(repo) = git2::Repository::discover(root) {
-        if let Ok(git_statuses) = repo.statuses(None) {
-            for entry in git_statuses.iter() {
-                let status = entry.status();
-                let file_status = if status.is_wt_modified() || status.is_index_modified() {
-                    GitFileStatus::Modified
-                } else if status.is_wt_new() {
-                    GitFileStatus::Untracked
-                } else if status.is_index_new() {
-                    GitFileStatus::Added
-                } else if status.is_wt_deleted() || status.is_index_deleted() {
-                    GitFileStatus::Deleted
-                } else if status.is_wt_renamed() || status.is_index_renamed() {
-                    GitFileStatus::Renamed
-                } else {
-                    continue;
-                };
+    let repo = match git2::Repository::discover(root) {
+        Ok(r) => r,
+        Err(_) => return statuses,
+    };
 
-                if let Some(path) = entry.path() {
-                    statuses.insert(root.join(path), file_status);
+    let workdir = match repo.workdir() {
+        Some(w) => w.to_path_buf(),
+        None => return statuses,
+    };
+
+    let git_statuses = match repo.statuses(None) {
+        Ok(s) => s,
+        Err(_) => return statuses,
+    };
+
+    for entry in git_statuses.iter() {
+        let status = entry.status();
+        let file_status = if status.is_wt_modified() || status.is_index_modified() {
+            GitFileStatus::Modified
+        } else if status.is_wt_new() {
+            GitFileStatus::Untracked
+        } else if status.is_index_new() {
+            GitFileStatus::Added
+        } else if status.is_wt_deleted() || status.is_index_deleted() {
+            GitFileStatus::Deleted
+        } else if status.is_wt_renamed() || status.is_index_renamed() {
+            GitFileStatus::Renamed
+        } else {
+            continue;
+        };
+
+        if let Some(path) = entry.path() {
+            let abs_path = workdir.join(path);
+            statuses.insert(abs_path.clone(), file_status.clone());
+
+            // Propagate to all parent directories up to root
+            // Priority: Deleted(3) > Modified(2) > Added/Untracked(1) > Clean(0)
+            let new_priority = match &file_status {
+                GitFileStatus::Deleted => 3,
+                GitFileStatus::Modified => 2,
+                GitFileStatus::Added | GitFileStatus::Untracked => 1,
+                _ => 0,
+            };
+
+            let mut parent = abs_path.parent();
+            while let Some(p) = parent {
+                if p < workdir {
+                    break;
                 }
+                let existing_priority = match statuses.get(p) {
+                    Some(GitFileStatus::Deleted) => 3,
+                    Some(GitFileStatus::Modified) => 2,
+                    Some(GitFileStatus::Added) | Some(GitFileStatus::Untracked) => 1,
+                    Some(GitFileStatus::Renamed) => 1,
+                    Some(GitFileStatus::Clean) | None => 0,
+                };
+                if new_priority > existing_priority {
+                    statuses.insert(p.to_path_buf(), file_status.clone());
+                }
+                parent = p.parent();
             }
         }
     }

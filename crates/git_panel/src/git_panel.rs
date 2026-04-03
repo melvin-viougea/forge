@@ -22,10 +22,9 @@ mod colors {
     pub fn lavender() -> Rgba { rgb(0xb4befe) }
 }
 
-/// Commit panel (top of right dock)
+/// Simple one-button commit panel
 pub struct CommitPanel {
     root_path: PathBuf,
-    commit_message: String,
     is_loading: bool,
     status_text: String,
 }
@@ -34,7 +33,6 @@ impl CommitPanel {
     pub fn new(root_path: PathBuf) -> Self {
         Self {
             root_path,
-            commit_message: String::new(),
             is_loading: false,
             status_text: String::new(),
         }
@@ -46,130 +44,61 @@ impl Render for CommitPanel {
         div()
             .flex()
             .flex_col()
+            .items_center()
             .w_full()
             .bg(colors::mantle())
-            .p(px(8.))
-            .gap(px(6.))
-            // Title
+            .p(px(12.))
+            .gap(px(8.))
+            // One-button: Commit & Push
             .child(
                 div()
+                    .id("commit-push")
                     .flex()
-                    .flex_row()
                     .items_center()
-                    .gap(px(6.))
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(colors::text())
-                            .child("COMMIT"),
-                    ),
-            )
-            // Commit message display
-            .child(
-                div()
+                    .justify_center()
                     .w_full()
-                    .min_h(px(48.))
-                    .bg(colors::surface0())
-                    .rounded(px(4.))
-                    .p(px(6.))
-                    .text_xs()
-                    .text_color(if self.commit_message.is_empty() {
-                        colors::overlay()
+                    .h(px(36.))
+                    .bg(colors::blue())
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .text_sm()
+                    .text_color(rgb(0x1e1e2e))
+                    .font_weight(FontWeight::BOLD)
+                    .hover(|d| d.bg(colors::lavender()))
+                    .child(if self.is_loading {
+                        "Pushing..."
                     } else {
-                        colors::text()
+                        "Commit & Push"
                     })
-                    .child(if self.commit_message.is_empty() {
-                        "AI-generated message will appear here...".to_string()
-                    } else {
-                        self.commit_message.clone()
-                    }),
-            )
-            // Action buttons
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap(px(4.))
-                    .w_full()
-                    // Generate AI message button
-                    .child(
-                        div()
-                            .id("generate-msg")
-                            .flex()
-                            .flex_1()
-                            .items_center()
-                            .justify_center()
-                            .h(px(28.))
-                            .bg(colors::surface0())
-                            .rounded(px(4.))
-                            .cursor_pointer()
-                            .text_xs()
-                            .text_color(colors::lavender())
-                            .hover(|d| d.bg(colors::surface1()))
-                            .child(if self.is_loading {
-                                "Generating..."
-                            } else {
-                                "AI Generate"
-                            })
-                            .on_click(cx.listener(|this, _ev, _window, cx| {
-                                if this.is_loading {
-                                    return;
-                                }
-                                this.is_loading = true;
-                                this.status_text = "Generating...".to_string();
-                                cx.notify();
+                    .on_click(cx.listener(|this, _ev, _window, cx| {
+                        if this.is_loading {
+                            return;
+                        }
+                        this.is_loading = true;
+                        this.status_text = "Staging files...".to_string();
+                        cx.notify();
 
-                                let root = this.root_path.clone();
-                                match crate::operations::generate_commit_message(&root) {
+                        let root = this.root_path.clone();
+                        cx.spawn(async |this: WeakEntity<CommitPanel>, cx: &mut AsyncApp| {
+                            // Run the blocking git operations on background thread
+                            let result = cx.background_executor().spawn(async move {
+                                crate::operations::one_button_commit_and_push(&root)
+                            }).await;
+
+                            this.update(cx, |view, cx| {
+                                match result {
                                     Ok(msg) => {
-                                        this.commit_message = msg;
-                                        this.status_text = "Message generated".to_string();
+                                        view.status_text = msg;
                                     }
                                     Err(e) => {
-                                        this.status_text = format!("Error: {}", e);
+                                        view.status_text = format!("Error: {}", e);
                                     }
                                 }
-                                this.is_loading = false;
+                                view.is_loading = false;
                                 cx.notify();
-                            })),
-                    )
-                    // One-button commit + push
-                    .child(
-                        div()
-                            .id("commit-push")
-                            .flex()
-                            .flex_1()
-                            .items_center()
-                            .justify_center()
-                            .h(px(28.))
-                            .bg(colors::blue())
-                            .rounded(px(4.))
-                            .cursor_pointer()
-                            .text_xs()
-                            .text_color(rgb(0x1e1e2e))
-                            .font_weight(FontWeight::BOLD)
-                            .hover(|d| d.bg(colors::lavender()))
-                            .child("Commit & Push")
-                            .on_click(cx.listener(|this, _ev, _window, cx| {
-                                this.is_loading = true;
-                                this.status_text = "Committing...".to_string();
-                                cx.notify();
-
-                                let root = this.root_path.clone();
-                                match crate::operations::one_button_commit_and_push(&root) {
-                                    Ok(msg) => {
-                                        this.status_text = msg;
-                                        this.commit_message.clear();
-                                    }
-                                    Err(e) => {
-                                        this.status_text = format!("Error: {}", e);
-                                    }
-                                }
-                                this.is_loading = false;
-                                cx.notify();
-                            })),
-                    ),
+                            }).ok();
+                        }).detach();
+                    })),
             )
             // Status text
             .when(!self.status_text.is_empty(), |d: Div| {
@@ -177,6 +106,7 @@ impl Render for CommitPanel {
                     div()
                         .text_xs()
                         .text_color(colors::subtext())
+                        .w_full()
                         .child(self.status_text.clone()),
                 )
             })
@@ -188,20 +118,88 @@ pub struct GitChangesPanel {
     root_path: PathBuf,
     changes: Vec<GitFileChange>,
     selected_index: Option<usize>,
+    context_menu: Option<ContextMenuState>,
+    _poll_task: Task<()>,
+}
+
+struct ContextMenuState {
+    position: Point<Pixels>,
+    target_idx: usize,
 }
 
 impl GitChangesPanel {
-    pub fn new(root_path: PathBuf) -> Self {
+    pub fn new(root_path: PathBuf, cx: &mut Context<Self>) -> Self {
         let changes = get_changes(&root_path);
+
+        let poll_task = cx.spawn(async |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            loop {
+                cx.background_executor().timer(std::time::Duration::from_secs(2)).await;
+                let result = this.update(cx, |view, cx| {
+                    let new_changes = get_changes(&view.root_path);
+                    if new_changes.len() != view.changes.len() {
+                        view.changes = new_changes;
+                        cx.notify();
+                    } else {
+                        // Check if any paths changed
+                        let changed = view.changes.iter().zip(new_changes.iter())
+                            .any(|(a, b)| a.path != b.path || a.insertions != b.insertions || a.deletions != b.deletions);
+                        if changed {
+                            view.changes = new_changes;
+                            cx.notify();
+                        }
+                    }
+                });
+                if result.is_err() {
+                    break;
+                }
+            }
+        });
+
         Self {
             root_path,
             changes,
             selected_index: None,
+            context_menu: None,
+            _poll_task: poll_task,
         }
     }
 
     pub fn refresh(&mut self) {
         self.changes = get_changes(&self.root_path);
+    }
+
+    pub fn change_count(&self) -> usize {
+        self.changes.len()
+    }
+
+    fn discard_change(&mut self, idx: usize) {
+        if idx >= self.changes.len() {
+            return;
+        }
+        let change = &self.changes[idx];
+        let path = &change.path;
+
+        match change.status {
+            ChangeStatus::Untracked => {
+                // Delete untracked file
+                let abs = self.root_path.join(path);
+                if abs.is_dir() {
+                    let _ = std::fs::remove_dir_all(&abs);
+                } else {
+                    let _ = std::fs::remove_file(&abs);
+                }
+            }
+            _ => {
+                // git checkout -- <file>
+                let _ = std::process::Command::new("git")
+                    .args(["checkout", "--", &path.display().to_string()])
+                    .current_dir(&self.root_path)
+                    .output();
+            }
+        }
+
+        self.context_menu = None;
+        self.refresh();
     }
 
     fn status_color(status: &ChangeStatus) -> Rgba {
@@ -216,25 +214,12 @@ impl GitChangesPanel {
 
 impl Render for GitChangesPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Pre-extract data from self.changes to avoid borrow conflicts with cx
         let selected_index = self.selected_index;
-        let has_staged = self.changes.iter().any(|c| c.staged);
-        let has_unstaged = self.changes.iter().any(|c| !c.staged);
-        let change_count = self.changes.len();
+        let context_menu = self.context_menu.as_ref().map(|m| (m.position, m.target_idx));
 
-        let staged_entries: Vec<_> = self.changes
+        let all_entries: Vec<_> = self.changes
             .iter()
             .enumerate()
-            .filter(|(_, c)| c.staged)
-            .map(|(idx, change)| {
-                render_change_entry(idx, change, selected_index, cx)
-            })
-            .collect();
-
-        let unstaged_entries: Vec<_> = self.changes
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| !c.staged)
             .map(|(idx, change)| {
                 render_change_entry(idx, change, selected_index, cx)
             })
@@ -249,53 +234,62 @@ impl Render for GitChangesPanel {
             .overflow_y_scroll()
             .text_xs()
             .font_family("Berkeley Mono, SF Mono, Menlo, monospace")
-            // Header
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .px(px(8.))
-                    .py(px(6.))
-                    .text_color(colors::subtext())
-                    .child(format!("CHANGES ({})", change_count))
-                    .child(
-                        div()
-                            .id("refresh-changes")
-                            .cursor_pointer()
-                            .hover(|d| d.text_color(colors::text()))
-                            .child("R")
-                            .on_click(cx.listener(|this, _ev, _window, cx| {
-                                this.refresh();
-                                cx.notify();
-                            })),
+            .children(all_entries)
+            // Context menu
+            .when_some(context_menu, |d: Stateful<Div>, (pos, target_idx)| {
+                d.child(
+                    deferred(
+                        anchored()
+                            .position(pos)
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .w(px(160.))
+                                    .bg(colors::surface0())
+                                    .border_1()
+                                    .border_color(colors::surface1())
+                                    .rounded(px(6.))
+                                    .py(px(4.))
+                                    .text_xs()
+                                    .shadow_lg()
+                                    .child(
+                                        div()
+                                            .id("ctx-discard")
+                                            .flex()
+                                            .items_center()
+                                            .w_full()
+                                            .h(px(26.))
+                                            .px(px(12.))
+                                            .cursor_pointer()
+                                            .text_color(colors::red())
+                                            .hover(|d| d.bg(colors::surface1()))
+                                            .child("Discard Changes")
+                                            .on_click(cx.listener(move |this, _ev, _window, cx| {
+                                                this.discard_change(target_idx);
+                                                cx.notify();
+                                            })),
+                                    ),
+                            ),
                     ),
-            )
-            // Staged section
-            .when(has_staged, |d: Stateful<Div>| {
-                d.child(
-                    div()
-                        .px(px(8.))
-                        .py(px(2.))
-                        .text_color(colors::subtext())
-                        .child("Staged"),
                 )
             })
-            .children(staged_entries)
-            // Unstaged section
-            .when(has_unstaged, |d: Stateful<Div>| {
-                d.child(
-                    div()
-                        .px(px(8.))
-                        .py(px(2.))
-                        .mt(px(4.))
-                        .text_color(colors::subtext())
-                        .child("Changes"),
-                )
-            })
-            .children(unstaged_entries)
     }
+}
+
+/// Shorten a path from the left, cutting anywhere (even mid-word):
+/// "crates/file_explorer/src" with max 10 → "...orer/src"
+fn shorten_path_left(path: &str, max_chars: usize) -> String {
+    if path.chars().count() <= max_chars {
+        return path.to_string();
+    }
+    if max_chars <= 3 {
+        return "...".to_string();
+    }
+    let keep = max_chars - 3;
+    let skip = path.chars().count() - keep;
+    let truncated: String = path.chars().skip(skip).collect();
+    format!("...{}", truncated)
 }
 
 fn render_change_entry(
@@ -307,16 +301,29 @@ fn render_change_entry(
     let is_selected = selected == Some(idx);
     let color = GitChangesPanel::status_color(&change.status);
     let label = change.status.label();
-    let path = change
+
+    let filename = change
         .path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_default();
+
     let dir = change
         .path
         .parent()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
+
+    let insertions = change.insertions;
+    let deletions = change.deletions;
+
+    // Format stats string with fixed width for alignment
+    let stats_str = format!("+{} -{}", insertions, deletions);
+
+    // Budget for dir: panel is ~280px / ~7px per char ≈ 40 chars total
+    // Subtract icon(2) + filename + space + stats(~10)
+    let max_dir = 38_usize.saturating_sub(filename.chars().count());
+    let dir_display = shorten_path_left(&dir, max_dir);
 
     div()
         .id(ElementId::Name(format!("change-{}", idx).into()))
@@ -324,30 +331,66 @@ fn render_change_entry(
         .flex_row()
         .items_center()
         .w_full()
-        .h(px(22.))
-        .px(px(12.))
+        .h(px(30.))
+        .px(px(8.))
         .cursor_pointer()
         .when(is_selected, |d: Stateful<Div>| d.bg(colors::surface0()))
         .hover(|d| d.bg(colors::surface0()))
+        // Status icon
         .child(
             div()
-                .w(px(16.))
+                .w(px(18.))
                 .text_color(color)
                 .child(label),
         )
+        // Filename (never truncated)
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_color(colors::text())
+                .font_weight(FontWeight::MEDIUM)
+                .child(format!("{} ", filename)),
+        )
+        // Directory path (left-truncated with ...)
         .child(
             div()
                 .flex_1()
-                .text_color(colors::text())
-                .child(path),
+                .min_w(px(0.))
+                .truncate()
+                .text_color(colors::overlay())
+                .child(dir_display),
         )
+        // +/- stats — always right-aligned
         .child(
             div()
-                .text_color(colors::overlay())
-                .child(dir),
+                .flex_shrink_0()
+                .ml(px(6.))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(4.))
+                .child(
+                    div()
+                        .text_color(colors::green())
+                        .child(format!("+{}", insertions)),
+                )
+                .child(
+                    div()
+                        .text_color(colors::red())
+                        .child(format!("-{}", deletions)),
+                ),
         )
         .on_click(cx.listener(move |this, _ev, _window, cx| {
+            this.context_menu = None;
             this.selected_index = Some(idx);
+            cx.notify();
+        }))
+        .on_mouse_down(MouseButton::Right, cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
+            this.selected_index = Some(idx);
+            this.context_menu = Some(ContextMenuState {
+                position: ev.position,
+                target_idx: idx,
+            });
             cx.notify();
         }))
 }
