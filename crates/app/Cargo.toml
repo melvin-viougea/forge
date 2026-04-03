@@ -1,10 +1,10 @@
 [package]
-name = "claude-ide"
+name = "forge"
 version = "0.1.0"
 edition.workspace = true
 
 [[bin]]
-name = "claude-ide"
+name = "forge"
 path = "src/main.rs"
 
 [dependencies]

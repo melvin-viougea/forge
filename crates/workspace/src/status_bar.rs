@@ -70,7 +70,7 @@ impl Render for StatusBar {
                     .items_center()
                     .gap(px(8.))
                     .child(format!("Agents: {}", self.agent_count))
-                    .child("Claude IDE v0.1"),
+                    .child("Forge v0.1"),
             )
     }
 }
