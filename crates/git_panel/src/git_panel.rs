@@ -117,14 +117,14 @@ impl Render for CommitPanel {
                     .flex_row()
                     .w_full()
                     .gap(px(6.))
-                    // Run / Stop button
+                    // Run / Stop button (50%)
                     .child(
                         div()
                             .id("run-btn")
                             .flex()
+                            .flex_1()
                             .items_center()
                             .justify_center()
-                            .w(px(44.))
                             .h(px(32.))
                             .bg(if self.is_running { colors::red() } else { colors::green() })
                             .rounded(px(6.))
@@ -133,13 +133,13 @@ impl Render for CommitPanel {
                             .text_color(rgb(0x1e1e2e))
                             .font_weight(FontWeight::BOLD)
                             .hover(|d| d.bg(colors::surface1()))
-                            .child(if self.is_running { "■" } else { "▶" })
+                            .child(if self.is_running { "■ Stop" } else { "▶ Run" })
                             .on_click(cx.listener(|this, _ev, _window, cx| {
                                 this.toggle_runner();
                                 cx.notify();
                             })),
                     )
-                    // Push button
+                    // Push button (50%)
                     .child(
                         div()
                             .id("push-btn")

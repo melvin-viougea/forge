@@ -145,12 +145,17 @@ impl Pane {
 
 impl Render for Pane {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let has_tabs = !self.tabs.is_empty();
+
         div()
             .flex()
             .flex_col()
             .size_full()
             .bg(theme::base())
-            .child(self.render_tab_bar(cx))
+            // Tab bar only when tabs exist
+            .when(has_tabs, |d: Div| {
+                d.child(self.render_tab_bar(cx))
+            })
             .child(
                 div()
                     .flex_1()
@@ -159,17 +164,54 @@ impl Render for Pane {
                     .when_some(self.tabs.get(self.active_tab), |d: Div, tab| {
                         d.child(tab.view.clone())
                     })
-                    .when(self.tabs.get(self.active_tab).is_none(), |d: Div| {
-                        d.child(
-                            div()
-                                .size_full()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_color(theme::overlay())
-                                .child("No tabs open"),
-                        )
+                    .when(!has_tabs, |d: Div| {
+                        d.child(Self::render_welcome(cx))
                     }),
+            )
+    }
+}
+
+impl Pane {
+    fn render_welcome(cx: &mut Context<Self>) -> Div {
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(16.))
+            // Logo
+            .child(
+                div()
+                    .w(px(64.))
+                    .h(px(64.))
+                    .rounded(px(16.))
+                    .bg(theme::blue())
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .text_color(theme::base())
+                            .text_size(px(32.))
+                            .font_weight(FontWeight::BOLD)
+                            .child("F"),
+                    ),
+            )
+            // Title
+            .child(
+                div()
+                    .text_color(theme::text())
+                    .text_size(px(24.))
+                    .font_weight(FontWeight::BOLD)
+                    .child("Forge"),
+            )
+            // Subtitle
+            .child(
+                div()
+                    .text_color(theme::overlay())
+                    .text_sm()
+                    .child("Multi-Agent IDE"),
             )
     }
 }

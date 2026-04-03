@@ -26,10 +26,16 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <key>CFBundleExecutable</key><string>forge</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>NSHighResolutionCapable</key><true/>
 </dict>
 </plist>
 PLIST
+
+# Copy icon if exists
+if [ -f "AppIcon.icns" ]; then
+    cp AppIcon.icns "$APP_DIR/Contents/Resources/AppIcon.icns"
+fi
 
 echo "==> Compressing..."
 cd target/release

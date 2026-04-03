@@ -52,7 +52,7 @@ impl Render for IdeWorkspace {
                     .h(px(28.))
                     .flex_shrink_0()
                     .bg(theme::mantle())
-                    // Left: leave space for traffic lights + update button
+                    // Left: traffic lights + FORGE title + update button
                     .child(
                         div()
                             .flex()
@@ -60,6 +60,13 @@ impl Render for IdeWorkspace {
                             .items_center()
                             .pl(px(78.))
                             .gap(px(8.))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(theme::blue())
+                                    .child("FORGE"),
+                            )
                             .when_some(self.update_version.clone(), |d: Div, version| {
                                 d.child(
                                     div()
@@ -91,7 +98,7 @@ impl Render for IdeWorkspace {
                             .pr(px(12.))
                             .text_xs()
                             .text_color(theme::subtext())
-                            .child("Forge v0.8"),
+                            .child("Forge v0.9"),
                     ),
             )
             // Main content row: left dock | center | right dock

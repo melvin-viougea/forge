@@ -23,7 +23,11 @@ mod colors {
 
 impl TerminalView {
     pub fn new(title: String, cx: &mut Context<Self>) -> Self {
-        let terminal = Terminal::new(title, 120, 40).expect("Failed to create terminal");
+        Self::new_in(title, None, cx)
+    }
+
+    pub fn new_in(title: String, working_dir: Option<std::path::PathBuf>, cx: &mut Context<Self>) -> Self {
+        let terminal = Terminal::new(title, 120, 40, working_dir).expect("Failed to create terminal");
         let focus_handle = cx.focus_handle();
 
         let poll_task = cx.spawn(async |this: WeakEntity<Self>, cx: &mut AsyncApp| {

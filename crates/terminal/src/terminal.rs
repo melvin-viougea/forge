@@ -1,6 +1,7 @@
 use anyhow::Result;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -167,7 +168,7 @@ impl Dimensions for TermDimensions {
 // ── Terminal impl ────────────────────────────────────────────
 
 impl Terminal {
-    pub fn new(title: String, cols: u16, rows: u16) -> Result<Self> {
+    pub fn new(title: String, cols: u16, rows: u16, working_dir: Option<PathBuf>) -> Result<Self> {
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(PtySize {
             rows, cols, pixel_width: 0, pixel_height: 0,
@@ -176,7 +177,7 @@ impl Terminal {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
         let mut cmd = CommandBuilder::new(&shell);
         cmd.arg("-l");
-        cmd.cwd(std::env::current_dir().unwrap_or_else(|_| "/".into()));
+        cmd.cwd(working_dir.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into())));
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
 
