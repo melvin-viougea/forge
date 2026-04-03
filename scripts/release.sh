@@ -39,7 +39,7 @@ echo "==> Creating DMG..."
 STAGING=$(mktemp -d)
 cp -r Forge.app "$STAGING/"
 ln -s /Applications "$STAGING/Applications"
-hdiutil create -volname "Forge" -srcfolder "$STAGING" -ov -format UDZO "Forge-v${VERSION}.dmg"
+hdiutil create -volname "Forge v${VERSION}" -srcfolder "$STAGING" -ov -format UDZO "Forge-v${VERSION}.dmg"
 cd ../..
 
 echo "==> Publishing GitHub Release v$VERSION..."
