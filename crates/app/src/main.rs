@@ -198,6 +198,7 @@ impl Render for RightPanel {
                 div()
                     .w_full()
                     .h(px(1.))
+                    .flex_shrink_0()
                     .bg(colors::surface1()),
             )
             // Toggle bar: Changes | Files (Changes first, default active)
@@ -207,6 +208,8 @@ impl Render for RightPanel {
                     .flex_row()
                     .w_full()
                     .h(px(28.))
+                    .min_h(px(28.))
+                    .flex_shrink_0()
                     .bg(colors::mantle())
                     .border_b_1()
                     .border_color(colors::surface1())
