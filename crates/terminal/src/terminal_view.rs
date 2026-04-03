@@ -171,33 +171,37 @@ impl Render for TerminalView {
                 this.focus_handle.focus(window);
             }))
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _window, cx| {
-                let handled = if let Some(key_char) = &ev.keystroke.key_char {
-                    if !ev.keystroke.modifiers.platform && !ev.keystroke.modifiers.control {
-                        this.terminal.write_input(key_char.as_bytes());
-                        true
-                    } else if ev.keystroke.modifiers.control {
-                        let ch = ev.keystroke.key.chars().next().unwrap_or('c');
-                        let ctrl_byte = (ch as u8).wrapping_sub(b'a').wrapping_add(1);
-                        this.terminal.write_input(&[ctrl_byte]);
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    match ev.keystroke.key.as_str() {
-                        "enter" => { this.terminal.write_input(b"\r"); true }
-                        "backspace" => { this.terminal.write_input(b"\x7f"); true }
-                        "tab" => { this.terminal.write_input(b"\t"); true }
-                        "escape" => { this.terminal.write_input(b"\x1b"); true }
-                        "space" => { this.terminal.write_input(b" "); true }
-                        "up" => { this.terminal.write_input(b"\x1b[A"); true }
-                        "down" => { this.terminal.write_input(b"\x1b[B"); true }
-                        "left" => { this.terminal.write_input(b"\x1b[D"); true }
-                        "right" => { this.terminal.write_input(b"\x1b[C"); true }
-                        "delete" => { this.terminal.write_input(b"\x1b[3~"); true }
-                        "home" => { this.terminal.write_input(b"\x1b[H"); true }
-                        "end" => { this.terminal.write_input(b"\x1b[F"); true }
-                        _ => false,
+                // Handle special keys FIRST, before key_char
+                let handled = match ev.keystroke.key.as_str() {
+                    "enter" => { this.terminal.write_input(b"\r"); true }
+                    "backspace" => { this.terminal.write_input(b"\x7f"); true }
+                    "tab" => { this.terminal.write_input(b"\t"); true }
+                    "escape" => { this.terminal.write_input(b"\x1b"); true }
+                    "space" => { this.terminal.write_input(b" "); true }
+                    "up" => { this.terminal.write_input(b"\x1b[A"); true }
+                    "down" => { this.terminal.write_input(b"\x1b[B"); true }
+                    "left" => { this.terminal.write_input(b"\x1b[D"); true }
+                    "right" => { this.terminal.write_input(b"\x1b[C"); true }
+                    "delete" => { this.terminal.write_input(b"\x1b[3~"); true }
+                    "home" => { this.terminal.write_input(b"\x1b[H"); true }
+                    "end" => { this.terminal.write_input(b"\x1b[F"); true }
+                    _ => {
+                        // Regular characters via key_char
+                        if let Some(key_char) = &ev.keystroke.key_char {
+                            if ev.keystroke.modifiers.control {
+                                let ch = ev.keystroke.key.chars().next().unwrap_or('c');
+                                let ctrl_byte = (ch as u8).wrapping_sub(b'a').wrapping_add(1);
+                                this.terminal.write_input(&[ctrl_byte]);
+                                true
+                            } else if !ev.keystroke.modifiers.platform {
+                                this.terminal.write_input(key_char.as_bytes());
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
                     }
                 };
                 if handled {

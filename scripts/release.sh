@@ -57,3 +57,5 @@ echo "    https://github.com/melvin-viougea/forge/releases/tag/v$VERSION"
 # 2. Met à jour la version dans updater.rs (CURRENT_VERSION)
 # 3. Lance le script de release :
 # ./scripts/release.sh 0.2.0 "Description des changements"
+#
+# xattr -cr /Applications/Forge.app
