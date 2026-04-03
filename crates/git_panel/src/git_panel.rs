@@ -22,10 +22,12 @@ mod colors {
     pub fn lavender() -> Rgba { rgb(0xb4befe) }
 }
 
-/// Simple one-button commit panel
+/// Action bar: Run/Stop + Push
 pub struct CommitPanel {
     root_path: PathBuf,
-    is_loading: bool,
+    is_pushing: bool,
+    is_running: bool,
+    runner_process: Option<std::process::Child>,
     status_text: String,
 }
 
@@ -33,8 +35,67 @@ impl CommitPanel {
     pub fn new(root_path: PathBuf) -> Self {
         Self {
             root_path,
-            is_loading: false,
+            is_pushing: false,
+            is_running: false,
+            runner_process: None,
             status_text: String::new(),
+        }
+    }
+
+    fn toggle_runner(&mut self) {
+        if self.is_running {
+            // Stop
+            if let Some(mut child) = self.runner_process.take() {
+                let _ = child.kill();
+            }
+            self.is_running = false;
+            self.status_text = "Stopped".to_string();
+        } else {
+            // Start — detect project type and run
+            let cmd = self.detect_run_command();
+            match std::process::Command::new("sh")
+                .args(["-c", &cmd])
+                .current_dir(&self.root_path)
+                .spawn()
+            {
+                Ok(child) => {
+                    self.runner_process = Some(child);
+                    self.is_running = true;
+                    self.status_text = format!("Running: {}", cmd);
+                }
+                Err(e) => {
+                    self.status_text = format!("Error: {}", e);
+                }
+            }
+        }
+    }
+
+    fn detect_run_command(&self) -> String {
+        let root = &self.root_path;
+        if root.join("Cargo.toml").exists() {
+            "cargo run".to_string()
+        } else if root.join("package.json").exists() {
+            if root.join("bun.lock").exists() || root.join("bun.lockb").exists() {
+                "bun run dev".to_string()
+            } else {
+                "npm run dev".to_string()
+            }
+        } else if root.join("Makefile").exists() {
+            "make run".to_string()
+        } else if root.join("main.py").exists() {
+            "python3 main.py".to_string()
+        } else if root.join("main.go").exists() {
+            "go run .".to_string()
+        } else {
+            "echo 'No run command detected'".to_string()
+        }
+    }
+}
+
+impl Drop for CommitPanel {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.runner_process.take() {
+            let _ = child.kill();
         }
     }
 }
@@ -47,58 +108,79 @@ impl Render for CommitPanel {
             .items_center()
             .w_full()
             .bg(colors::mantle())
-            .p(px(12.))
-            .gap(px(8.))
-            // One-button: Commit & Push
+            .p(px(8.))
+            .gap(px(6.))
+            // Row: Run/Stop + Push
             .child(
                 div()
-                    .id("commit-push")
                     .flex()
-                    .items_center()
-                    .justify_center()
+                    .flex_row()
                     .w_full()
-                    .h(px(36.))
-                    .bg(colors::blue())
-                    .rounded(px(6.))
-                    .cursor_pointer()
-                    .text_sm()
-                    .text_color(rgb(0x1e1e2e))
-                    .font_weight(FontWeight::BOLD)
-                    .hover(|d| d.bg(colors::lavender()))
-                    .child(if self.is_loading {
-                        "Pushing..."
-                    } else {
-                        "Commit & Push"
-                    })
-                    .on_click(cx.listener(|this, _ev, _window, cx| {
-                        if this.is_loading {
-                            return;
-                        }
-                        this.is_loading = true;
-                        this.status_text = "Staging files...".to_string();
-                        cx.notify();
-
-                        let root = this.root_path.clone();
-                        cx.spawn(async |this: WeakEntity<CommitPanel>, cx: &mut AsyncApp| {
-                            // Run the blocking git operations on background thread
-                            let result = cx.background_executor().spawn(async move {
-                                crate::operations::one_button_commit_and_push(&root)
-                            }).await;
-
-                            this.update(cx, |view, cx| {
-                                match result {
-                                    Ok(msg) => {
-                                        view.status_text = msg;
-                                    }
-                                    Err(e) => {
-                                        view.status_text = format!("Error: {}", e);
-                                    }
-                                }
-                                view.is_loading = false;
+                    .gap(px(6.))
+                    // Run / Stop button
+                    .child(
+                        div()
+                            .id("run-btn")
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .w(px(44.))
+                            .h(px(32.))
+                            .bg(if self.is_running { colors::red() } else { colors::green() })
+                            .rounded(px(6.))
+                            .cursor_pointer()
+                            .text_sm()
+                            .text_color(rgb(0x1e1e2e))
+                            .font_weight(FontWeight::BOLD)
+                            .hover(|d| d.bg(colors::surface1()))
+                            .child(if self.is_running { "■" } else { "▶" })
+                            .on_click(cx.listener(|this, _ev, _window, cx| {
+                                this.toggle_runner();
                                 cx.notify();
-                            }).ok();
-                        }).detach();
-                    })),
+                            })),
+                    )
+                    // Push button
+                    .child(
+                        div()
+                            .id("push-btn")
+                            .flex()
+                            .flex_1()
+                            .items_center()
+                            .justify_center()
+                            .h(px(32.))
+                            .bg(colors::blue())
+                            .rounded(px(6.))
+                            .cursor_pointer()
+                            .text_sm()
+                            .text_color(rgb(0x1e1e2e))
+                            .font_weight(FontWeight::BOLD)
+                            .hover(|d| d.bg(colors::lavender()))
+                            .child(if self.is_pushing { "Pushing..." } else { "Push" })
+                            .on_click(cx.listener(|this, _ev, _window, cx| {
+                                if this.is_pushing {
+                                    return;
+                                }
+                                this.is_pushing = true;
+                                this.status_text = "Staging...".to_string();
+                                cx.notify();
+
+                                let root = this.root_path.clone();
+                                cx.spawn(async |this: WeakEntity<CommitPanel>, cx: &mut AsyncApp| {
+                                    let result = cx.background_executor().spawn(async move {
+                                        crate::operations::one_button_commit_and_push(&root)
+                                    }).await;
+
+                                    this.update(cx, |view, cx| {
+                                        match result {
+                                            Ok(msg) => view.status_text = msg,
+                                            Err(e) => view.status_text = format!("Error: {}", e),
+                                        }
+                                        view.is_pushing = false;
+                                        cx.notify();
+                                    }).ok();
+                                }).detach();
+                            })),
+                    ),
             )
             // Status text
             .when(!self.status_text.is_empty(), |d: Div| {

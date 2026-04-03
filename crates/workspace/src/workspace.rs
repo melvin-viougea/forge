@@ -91,7 +91,7 @@ impl Render for IdeWorkspace {
                             .pr(px(12.))
                             .text_xs()
                             .text_color(theme::subtext())
-                            .child("Forge v0.7"),
+                            .child("Forge v0.8"),
                     ),
             )
             // Main content row: left dock | center | right dock
