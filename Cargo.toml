@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/app",
+    "crates/workspace",
+    "crates/terminal",
+    "crates/file_explorer",
+    "crates/git_panel",
+    "crates/agent",
+]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+
+[workspace.dependencies]
+gpui = "0.2"
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4"] }

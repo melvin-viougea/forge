@@ -1,0 +1,19 @@
+[package]
+name = "claude-ide"
+version = "0.1.0"
+edition.workspace = true
+
+[[bin]]
+name = "claude-ide"
+path = "src/main.rs"
+
+[dependencies]
+gpui.workspace = true
+anyhow.workspace = true
+log.workspace = true
+env_logger.workspace = true
+ide_workspace = { path = "../workspace" }
+ide_terminal = { path = "../terminal" }
+ide_file_explorer = { path = "../file_explorer" }
+ide_git_panel = { path = "../git_panel" }
+ide_agent = { path = "../agent" }
