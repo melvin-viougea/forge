@@ -3,12 +3,17 @@ use gpui::prelude::*;
 
 use crate::theme;
 
+pub enum StatusBarEvent {
+    UpdateClicked,
+}
+
+impl EventEmitter<StatusBarEvent> for StatusBar {}
+
 pub struct StatusBar {
     pub branch_name: String,
     pub agent_count: usize,
     pub status_message: String,
     pub update_version: Option<String>,
-    pub on_update_click: Option<Box<dyn Fn(&mut Window, &mut App) + 'static>>,
 }
 
 impl StatusBar {
@@ -18,7 +23,6 @@ impl StatusBar {
             agent_count: 0,
             status_message: String::new(),
             update_version: None,
-            on_update_click: None,
         }
     }
 
@@ -49,14 +53,14 @@ impl Render for StatusBar {
             .px(px(12.))
             .text_xs()
             .text_color(theme::subtext())
-            // Left: update button OR branch name
+            // Left: update button + branch name
             .child(
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
                     .gap(px(8.))
-                    // Update button (if available)
+                    // Update button
                     .when_some(self.update_version.clone(), |d: Div, version| {
                         d.child(
                             div()
@@ -74,10 +78,8 @@ impl Render for StatusBar {
                                 .hover(|d| d.bg(theme::surface1()))
                                 .child("↓")
                                 .child(format!("Restart to Update (v{})", version))
-                                .on_click(cx.listener(|this, _ev, window, cx| {
-                                    if let Some(cb) = &this.on_update_click {
-                                        cb(window, cx);
-                                    }
+                                .on_click(cx.listener(|_this, _ev, _window, cx| {
+                                    cx.emit(StatusBarEvent::UpdateClicked);
                                 })),
                         )
                     })
@@ -107,7 +109,7 @@ impl Render for StatusBar {
                     .items_center()
                     .gap(px(8.))
                     .child(format!("Agents: {}", self.agent_count))
-                    .child("Forge v0.5"),
+                    .child("Forge v0.6"),
             )
     }
 }

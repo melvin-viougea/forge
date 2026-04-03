@@ -9,7 +9,7 @@ use ide_agent::{AgentManager, AgentToolbar};
 use ide_file_explorer::FileExplorerPanel;
 use ide_git_panel::{CommitPanel, GitChangesPanel};
 use ide_terminal::TerminalView;
-use ide_workspace::{Dock, DockPosition, IdeWorkspace, Pane, PaneEvent};
+use ide_workspace::{Dock, DockPosition, IdeWorkspace, Pane, PaneEvent, StatusBarEvent};
 
 /// Project entry in the left sidebar
 struct ProjectPanel {
@@ -289,8 +289,10 @@ struct AppView {
     workspace: Entity<IdeWorkspace>,
     project_panel: Entity<ProjectPanel>,
     terminal_count: usize,
+    update_info: Option<updater::UpdateInfo>,
     _pane_subscription: Subscription,
     _project_subscription: Subscription,
+    _statusbar_subscription: Subscription,
     _update_task: Task<()>,
 }
 
@@ -434,9 +436,35 @@ fn main() {
                         }
                     });
 
+                    // Subscribe to status bar update button
+                    let status_bar = workspace.read(cx).status_bar.clone();
+                    let statusbar_sub = cx.subscribe(&status_bar, |this: &mut AppView, _bar, event: &StatusBarEvent, cx| {
+                        match event {
+                            StatusBarEvent::UpdateClicked => {
+                                if let Some(info) = &this.update_info {
+                                    let info = info.clone();
+                                    cx.spawn(async |_this: WeakEntity<AppView>, cx: &mut AsyncApp| {
+                                        let result = cx.background_executor().spawn(async move {
+                                            updater::download_and_install(&info)
+                                        }).await;
+                                        match result {
+                                            Ok(()) => updater::relaunch(),
+                                            Err(_e) => {
+                                                // Fallback: open releases page
+                                                let _ = std::process::Command::new("open")
+                                                    .arg("https://github.com/melvin-viougea/forge/releases/latest")
+                                                    .spawn();
+                                            }
+                                        }
+                                    }).detach();
+                                }
+                            }
+                        }
+                    });
+
                     // Check for updates on startup (after 3s delay)
                     let status_bar_for_update = workspace.read(cx).status_bar.clone();
-                    let update_task = cx.spawn(async |_this: WeakEntity<AppView>, cx: &mut AsyncApp| {
+                    let update_task = cx.spawn(async |this: WeakEntity<AppView>, cx: &mut AsyncApp| {
                         let status_bar = status_bar_for_update;
                         cx.background_executor().timer(Duration::from_secs(3)).await;
                         let update_info = cx.background_executor().spawn(async {
@@ -445,18 +473,12 @@ fn main() {
 
                         if let Some(info) = update_info {
                             let version = info.version.clone();
-                            let info_for_click = info.clone();
                             status_bar.update(cx, |bar, _cx| {
                                 bar.update_version = Some(version);
-                                bar.on_update_click = Some(Box::new(move |_window, _cx| {
-                                    let info = info_for_click.clone();
-                                    // Download and install in background
-                                    std::thread::spawn(move || {
-                                        if updater::download_and_install(&info).is_ok() {
-                                            updater::relaunch();
-                                        }
-                                    });
-                                }));
+                            }).ok();
+                            this.update(cx, |view, cx| {
+                                view.update_info = Some(info);
+                                cx.notify();
                             }).ok();
                         }
                     });
@@ -465,8 +487,10 @@ fn main() {
                         workspace,
                         project_panel: project_panel,
                         terminal_count: 1,
+                        update_info: None,
                         _pane_subscription: pane_sub,
                         _project_subscription: project_sub,
+                        _statusbar_subscription: statusbar_sub,
                         _update_task: update_task,
                     }
                 })
