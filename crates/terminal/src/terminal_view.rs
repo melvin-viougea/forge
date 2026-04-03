@@ -151,9 +151,9 @@ impl Render for TerminalView {
             cx.focus_self(window);
         }
 
-        let lines = self.terminal.get_visible_lines(80);
+        let lines = self.terminal.get_visible_lines(200);
         let is_focused = self.focus_handle.is_focused(window);
-        let cursor_col = self.terminal.cursor_col();
+        let (cursor_row, cursor_col) = self.terminal.cursor_position();
         let line_count = lines.len();
 
         div()
@@ -206,8 +206,8 @@ impl Render for TerminalView {
             }))
             .children(
                 lines.iter().enumerate().map(move |(idx, line)| {
-                    if idx == line_count - 1 {
-                        render_line_with_cursor(line, cursor_col, is_focused)
+                    if idx == cursor_row && is_focused {
+                        render_line_with_cursor(line, cursor_col, true)
                     } else {
                         render_line(line)
                     }

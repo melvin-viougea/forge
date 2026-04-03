@@ -4,8 +4,16 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use alacritty_terminal::event::{EventListener, VoidListener};
+use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::term::cell::Cell as AlaCell;
+use alacritty_terminal::term::cell::Flags as CellFlags;
+use alacritty_terminal::term::Config;
+use alacritty_terminal::Term;
+use alacritty_terminal::vte::ansi;
+
 pub struct Terminal {
-    buffer: Arc<Mutex<TerminalBuffer>>,
+    term: Arc<Mutex<Term<VoidListener>>>,
     writer: Option<Box<dyn Write + Send>>,
     _reader_handle: Option<std::thread::JoinHandle<()>>,
     pub has_new_data: Arc<AtomicBool>,
@@ -14,7 +22,7 @@ pub struct Terminal {
     pub rows: u16,
 }
 
-// ── Color model ──────────────────────────────────────────────
+// ── Color model (for rendering) ──────────────────────────────
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TermColor {
@@ -24,7 +32,6 @@ pub enum TermColor {
 }
 
 impl TermColor {
-    /// Convert to GPUI Rgba
     pub fn to_rgba(&self, is_fg: bool) -> gpui::Rgba {
         use gpui::rgb;
         match self {
@@ -32,30 +39,14 @@ impl TermColor {
                 if is_fg { rgb(0xcdd6f4) } else { rgb(0x00000000) }
             }
             TermColor::Indexed(idx) => {
-                // Standard 16 colors (Catppuccin Mocha inspired)
                 let hex = match idx {
-                    0 => 0x45475a,   // black
-                    1 => 0xf38ba8,   // red
-                    2 => 0xa6e3a1,   // green
-                    3 => 0xf9e2af,   // yellow
-                    4 => 0x89b4fa,   // blue
-                    5 => 0xf5c2e7,   // magenta
-                    6 => 0x94e2d5,   // cyan
-                    7 => 0xbac2de,   // white
-                    8 => 0x585b70,   // bright black
-                    9 => 0xf38ba8,   // bright red
-                    10 => 0xa6e3a1,  // bright green
-                    11 => 0xf9e2af,  // bright yellow
-                    12 => 0x89b4fa,  // bright blue
-                    13 => 0xf5c2e7,  // bright magenta
-                    14 => 0x94e2d5,  // bright cyan
-                    15 => 0xa6adc8,  // bright white
-                    // 256-color: 16-231 = 6x6x6 color cube, 232-255 = grayscale
+                    0 => 0x45475a, 1 => 0xf38ba8, 2 => 0xa6e3a1, 3 => 0xf9e2af,
+                    4 => 0x89b4fa, 5 => 0xf5c2e7, 6 => 0x94e2d5, 7 => 0xbac2de,
+                    8 => 0x585b70, 9 => 0xf38ba8, 10 => 0xa6e3a1, 11 => 0xf9e2af,
+                    12 => 0x89b4fa, 13 => 0xf5c2e7, 14 => 0x94e2d5, 15 => 0xa6adc8,
                     16..=231 => {
                         let n = idx - 16;
-                        let b = (n % 6) * 51;
-                        let g = ((n / 6) % 6) * 51;
-                        let r = (n / 36) * 51;
+                        let b = (n % 6) * 51; let g = ((n / 6) % 6) * 51; let r = (n / 36) * 51;
                         ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
                     }
                     232..=255 => {
@@ -67,14 +58,29 @@ impl TermColor {
                 rgb(hex)
             }
             TermColor::Rgb(r, g, b) => {
-                let hex = ((*r as u32) << 16) | ((*g as u32) << 8) | (*b as u32);
-                rgb(hex)
+                gpui::rgb(((*r as u32) << 16) | ((*g as u32) << 8) | (*b as u32))
             }
         }
     }
 }
 
-// ── Cell & Line ──────────────────────────────────────────────
+fn convert_color(color: &ansi::Color) -> TermColor {
+    use alacritty_terminal::vte::ansi::NamedColor;
+    match color {
+        ansi::Color::Named(named) => match named {
+            NamedColor::Foreground | NamedColor::BrightForeground | NamedColor::DimForeground => TermColor::Default,
+            NamedColor::Background => TermColor::Default,
+            other => {
+                let idx = *other as u8;
+                if idx <= 15 { TermColor::Indexed(idx) } else { TermColor::Default }
+            }
+        },
+        ansi::Color::Spec(rgb) => TermColor::Rgb(rgb.r, rgb.g, rgb.b),
+        ansi::Color::Indexed(idx) => TermColor::Indexed(*idx),
+    }
+}
+
+// ── Cell & Line (rendering types) ────────────────────────────
 
 #[derive(Clone, Debug)]
 pub struct CellStyle {
@@ -85,11 +91,7 @@ pub struct CellStyle {
 
 impl Default for CellStyle {
     fn default() -> Self {
-        Self {
-            fg: TermColor::Default,
-            bg: TermColor::Default,
-            bold: false,
-        }
+        Self { fg: TermColor::Default, bg: TermColor::Default, bold: false }
     }
 }
 
@@ -104,413 +106,62 @@ pub struct TerminalLine {
     pub cells: Vec<Cell>,
 }
 
-impl TerminalLine {
-    fn new() -> Self {
-        Self { cells: Vec::new() }
-    }
-
-    /// Get plain text (for backward compat)
-    pub fn text(&self) -> String {
-        self.cells.iter().map(|c| c.ch).collect()
-    }
-}
-
-/// A run of text with the same style
-#[derive(Clone)]
 pub struct StyledSpan {
     pub text: String,
     pub style: CellStyle,
 }
 
 impl TerminalLine {
-    /// Group cells into styled spans for efficient rendering
     pub fn to_spans(&self) -> Vec<StyledSpan> {
         if self.cells.is_empty() {
-            return vec![StyledSpan {
-                text: " ".to_string(),
-                style: CellStyle::default(),
-            }];
+            return vec![StyledSpan { text: " ".to_string(), style: CellStyle::default() }];
         }
-
         let mut spans = Vec::new();
-        let mut current_text = String::new();
-        let mut current_style = self.cells[0].style.clone();
+        let mut text = String::new();
+        let mut style = self.cells[0].style.clone();
 
         for cell in &self.cells {
-            if cell.style.fg == current_style.fg
-                && cell.style.bg == current_style.bg
-                && cell.style.bold == current_style.bold
-            {
-                current_text.push(cell.ch);
+            if cell.style.fg == style.fg && cell.style.bg == style.bg && cell.style.bold == style.bold {
+                text.push(cell.ch);
             } else {
-                if !current_text.is_empty() {
-                    spans.push(StyledSpan {
-                        text: current_text.clone(),
-                        style: current_style.clone(),
-                    });
+                if !text.is_empty() {
+                    spans.push(StyledSpan { text: text.clone(), style: style.clone() });
                 }
-                current_text.clear();
-                current_text.push(cell.ch);
-                current_style = cell.style.clone();
+                text.clear();
+                text.push(cell.ch);
+                style = cell.style.clone();
             }
         }
-
-        if !current_text.is_empty() {
-            spans.push(StyledSpan {
-                text: current_text,
-                style: current_style,
-            });
+        if !text.is_empty() {
+            spans.push(StyledSpan { text, style });
         }
-
         spans
     }
 }
 
-// ── Buffer ───────────────────────────────────────────────────
-
-struct TerminalBuffer {
-    lines: Vec<TerminalLine>,
-    cursor_col: usize,
-    current_style: CellStyle,
-}
-
-impl TerminalBuffer {
-    fn new() -> Self {
-        Self {
-            lines: vec![TerminalLine::new()],
-            cursor_col: 0,
-            current_style: CellStyle::default(),
-        }
-    }
-
-    fn newline(&mut self) {
-        self.lines.push(TerminalLine::new());
-        self.cursor_col = 0;
-        if self.lines.len() > 10000 {
-            let excess = self.lines.len() - 10000;
-            self.lines.drain(..excess);
-        }
-    }
-
-    fn carriage_return(&mut self) {
-        self.cursor_col = 0;
-    }
-
-    fn backspace(&mut self) {
-        if self.cursor_col > 0 {
-            self.cursor_col -= 1;
-            if let Some(last) = self.lines.last_mut() {
-                if self.cursor_col < last.cells.len() {
-                    last.cells.remove(self.cursor_col);
-                }
-            }
-        }
-    }
-
-    fn tab(&mut self) {
-        let spaces = 8 - (self.cursor_col % 8);
-        for _ in 0..spaces {
-            self.put_char(' ');
-        }
-    }
-
-    fn put_char(&mut self, ch: char) {
-        let cell = Cell {
-            ch,
-            style: self.current_style.clone(),
-        };
-
-        if let Some(last) = self.lines.last_mut() {
-            if self.cursor_col < last.cells.len() {
-                last.cells[self.cursor_col] = cell;
-            } else {
-                // Pad with spaces
-                while last.cells.len() < self.cursor_col {
-                    last.cells.push(Cell {
-                        ch: ' ',
-                        style: CellStyle::default(),
-                    });
-                }
-                last.cells.push(cell);
-            }
-            self.cursor_col += 1;
-        }
-    }
-
-    /// Move cursor to absolute column (1-indexed, CSI G)
-    fn cursor_to_col(&mut self, col: usize) {
-        self.cursor_col = if col > 0 { col - 1 } else { 0 };
-    }
-
-    /// Move cursor forward by n columns (CSI C)
-    fn cursor_forward(&mut self, n: usize) {
-        self.cursor_col += n;
-    }
-
-    /// Move cursor backward by n columns (CSI D)
-    fn cursor_backward(&mut self, n: usize) {
-        self.cursor_col = self.cursor_col.saturating_sub(n);
-    }
-
-    /// Erase in line (CSI K)
-    fn erase_in_line(&mut self, mode: u16) {
-        if let Some(last) = self.lines.last_mut() {
-            match mode {
-                0 => {
-                    // Erase from cursor to end of line
-                    if self.cursor_col < last.cells.len() {
-                        last.cells.truncate(self.cursor_col);
-                    }
-                }
-                1 => {
-                    // Erase from beginning to cursor
-                    for i in 0..self.cursor_col.min(last.cells.len()) {
-                        last.cells[i] = Cell {
-                            ch: ' ',
-                            style: CellStyle::default(),
-                        };
-                    }
-                }
-                2 => {
-                    // Erase entire line
-                    last.cells.clear();
-                    self.cursor_col = 0;
-                }
-                _ => {}
-            }
-        }
-    }
-
-    /// Erase in display (CSI J)
-    fn erase_in_display(&mut self, mode: u16) {
-        match mode {
-            0 => {
-                // Erase from cursor to end - just erase current line from cursor
-                self.erase_in_line(0);
-            }
-            2 | 3 => {
-                // Don't actually clear scrollback — just add visual separation
-                // This preserves "Last login" and other startup messages
-                self.lines.push(TerminalLine::new());
-                self.cursor_col = 0;
-            }
-            _ => {}
-        }
-    }
-
-    /// Handle a complete CSI sequence
-    fn handle_csi(&mut self, params: &[u16], ch: char) {
-        match ch {
-            'm' => self.apply_sgr(params),
-            'G' => {
-                // CHA - Cursor Horizontal Absolute
-                let col = params.first().copied().unwrap_or(1) as usize;
-                self.cursor_to_col(col);
-            }
-            'C' => {
-                // CUF - Cursor Forward
-                let n = params.first().copied().unwrap_or(1) as usize;
-                self.cursor_forward(n);
-            }
-            'D' => {
-                // CUB - Cursor Backward
-                let n = params.first().copied().unwrap_or(1) as usize;
-                self.cursor_backward(n);
-            }
-            'K' => {
-                // EL - Erase in Line
-                let mode = params.first().copied().unwrap_or(0);
-                self.erase_in_line(mode);
-            }
-            'J' => {
-                // ED - Erase in Display
-                let mode = params.first().copied().unwrap_or(0);
-                self.erase_in_display(mode);
-            }
-            'A' => {
-                // CUU - Cursor Up (ignore for now, we don't track row)
-            }
-            'B' => {
-                // CUD - Cursor Down (ignore for now)
-            }
-            'H' | 'f' => {
-                // CUP - Cursor Position (row;col) - handle column only
-                if params.len() >= 2 {
-                    self.cursor_to_col(params[1] as usize);
-                }
-            }
-            'X' => {
-                // ECH - Erase Characters
-                let n = params.first().copied().unwrap_or(1) as usize;
-                if let Some(last) = self.lines.last_mut() {
-                    for i in 0..n {
-                        let pos = self.cursor_col + i;
-                        if pos < last.cells.len() {
-                            last.cells[pos] = Cell {
-                                ch: ' ',
-                                style: CellStyle::default(),
-                            };
-                        }
-                    }
-                }
-            }
-            'd' => {
-                // VPA - Vertical Position Absolute (move to row, keep col)
-                // We can't easily move between rows in our model, ignore
-            }
-            'r' => {
-                // DECSTBM - Set Scrolling Region, ignore
-            }
-            'h' | 'l' => {
-                // SM/RM - Set/Reset Mode (non-private), ignore
-            }
-            'n' => {
-                // DSR - Device Status Report, ignore
-            }
-            's' => {
-                // SCP - Save Cursor Position, ignore
-            }
-            'u' => {
-                // RCP - Restore Cursor Position, ignore
-            }
-            'P' => {
-                // DCH - Delete Characters
-                let n = params.first().copied().unwrap_or(1) as usize;
-                if let Some(last) = self.lines.last_mut() {
-                    for _ in 0..n {
-                        if self.cursor_col < last.cells.len() {
-                            last.cells.remove(self.cursor_col);
-                        }
-                    }
-                }
-            }
-            '@' => {
-                // ICH - Insert Characters
-                let n = params.first().copied().unwrap_or(1) as usize;
-                if let Some(last) = self.lines.last_mut() {
-                    for _ in 0..n {
-                        last.cells.insert(self.cursor_col, Cell {
-                            ch: ' ',
-                            style: CellStyle::default(),
-                        });
-                    }
-                }
-            }
-            'L' => {
-                // IL - Insert Lines, ignore (no row tracking)
-            }
-            'M' => {
-                // DL - Delete Lines, ignore
-            }
-            'S' => {
-                // SU - Scroll Up, ignore
-            }
-            'T' => {
-                // SD - Scroll Down, ignore
-            }
-            _ => {} // Ignore unsupported
-        }
-    }
-
-    /// Handle DEC private mode sequences (ESC[?...h/l)
-    fn handle_dec_private(&mut self, _params: &[u16], _ch: char) {
-        // Private modes we silently ignore:
-        // ?1    - Application cursor keys
-        // ?7    - Auto-wrap mode
-        // ?12   - Cursor blink
-        // ?25   - Cursor visibility (h=show, l=hide)
-        // ?47   - Alternate screen buffer (old)
-        // ?1000 - Mouse tracking
-        // ?1049 - Alternate screen buffer (new)
-        // ?2004 - Bracketed paste mode
-        // All are display concerns we don't need to track for text content
-    }
-
-    /// Apply SGR (Select Graphic Rendition) parameters
-    fn apply_sgr(&mut self, params: &[u16]) {
-        let mut i = 0;
-        while i < params.len() {
-            match params[i] {
-                0 => self.current_style = CellStyle::default(),
-                1 => self.current_style.bold = true,
-                2 => {} // Dim - ignore for now
-                3 => {} // Italic - ignore for now
-                4 => {} // Underline - ignore for now
-                7 => {
-                    // Reverse video - swap fg/bg
-                    std::mem::swap(&mut self.current_style.fg, &mut self.current_style.bg);
-                }
-                22 => self.current_style.bold = false,
-                23 => {} // Not italic
-                24 => {} // Not underlined
-                27 => {
-                    // Reverse off - swap back
-                    std::mem::swap(&mut self.current_style.fg, &mut self.current_style.bg);
-                }
-                // Standard foreground colors
-                30..=37 => self.current_style.fg = TermColor::Indexed((params[i] - 30) as u8),
-                39 => self.current_style.fg = TermColor::Default,
-                // Standard background colors
-                40..=47 => self.current_style.bg = TermColor::Indexed((params[i] - 40) as u8),
-                49 => self.current_style.bg = TermColor::Default,
-                // Bright foreground
-                90..=97 => self.current_style.fg = TermColor::Indexed((params[i] - 90 + 8) as u8),
-                // Bright background
-                100..=107 => self.current_style.bg = TermColor::Indexed((params[i] - 100 + 8) as u8),
-                // Extended colors
-                38 => {
-                    if i + 1 < params.len() {
-                        match params[i + 1] {
-                            5 if i + 2 < params.len() => {
-                                self.current_style.fg = TermColor::Indexed(params[i + 2] as u8);
-                                i += 2;
-                            }
-                            2 if i + 4 < params.len() => {
-                                self.current_style.fg = TermColor::Rgb(
-                                    params[i + 2] as u8,
-                                    params[i + 3] as u8,
-                                    params[i + 4] as u8,
-                                );
-                                i += 4;
-                            }
-                            _ => { i += 1; }
-                        }
-                    }
-                }
-                48 => {
-                    if i + 1 < params.len() {
-                        match params[i + 1] {
-                            5 if i + 2 < params.len() => {
-                                self.current_style.bg = TermColor::Indexed(params[i + 2] as u8);
-                                i += 2;
-                            }
-                            2 if i + 4 < params.len() => {
-                                self.current_style.bg = TermColor::Rgb(
-                                    params[i + 2] as u8,
-                                    params[i + 3] as u8,
-                                    params[i + 4] as u8,
-                                );
-                                i += 4;
-                            }
-                            _ => { i += 1; }
-                        }
-                    }
-                }
-                _ => {} // Ignore unsupported
-            }
-            i += 1;
-        }
+/// Convert an alacritty Cell to our rendering Cell
+fn convert_cell(cell: &AlaCell) -> Cell {
+    Cell {
+        ch: cell.c,
+        style: CellStyle {
+            fg: convert_color(&cell.fg),
+            bg: convert_color(&cell.bg),
+            bold: cell.flags.contains(CellFlags::BOLD),
+        },
     }
 }
 
-// ── ANSI parser ──────────────────────────────────────────────
+// ── Terminal dimensions helper ───────────────────────────────
 
-#[derive(PartialEq)]
-enum AnsiState {
-    Normal,
-    Escape,
-    CsiParam,
-    OscString,
+struct TermDimensions {
+    columns: usize,
+    screen_lines: usize,
+}
+
+impl Dimensions for TermDimensions {
+    fn total_lines(&self) -> usize { self.screen_lines }
+    fn screen_lines(&self) -> usize { self.screen_lines }
+    fn columns(&self) -> usize { self.columns }
 }
 
 // ── Terminal impl ────────────────────────────────────────────
@@ -519,18 +170,13 @@ impl Terminal {
     pub fn new(title: String, cols: u16, rows: u16) -> Result<Self> {
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
+            rows, cols, pixel_width: 0, pixel_height: 0,
         })?;
 
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
         let mut cmd = CommandBuilder::new(&shell);
         cmd.arg("-l");
         cmd.cwd(std::env::current_dir().unwrap_or_else(|_| "/".into()));
-
-        // Use xterm-256color for full color support
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
 
@@ -539,86 +185,29 @@ impl Terminal {
         let writer = pair.master.take_writer()?;
         let mut reader = pair.master.try_clone_reader()?;
 
-        let buffer: Arc<Mutex<TerminalBuffer>> =
-            Arc::new(Mutex::new(TerminalBuffer::new()));
+        // Create alacritty terminal
+        let config = Config::default();
+        let dimensions = TermDimensions {
+            columns: cols as usize,
+            screen_lines: rows as usize,
+        };
+        let term = Term::new(config, &dimensions, VoidListener);
+        let term = Arc::new(Mutex::new(term));
 
         let has_new_data = Arc::new(AtomicBool::new(false));
         let data_flag = has_new_data.clone();
-        let buffer_clone = buffer.clone();
+        let term_clone = term.clone();
 
         let reader_handle = std::thread::spawn(move || {
-            let mut buf = [0u8; 4096];
-            let mut ansi_state = AnsiState::Normal;
-            let mut csi_params = String::new();
+            let mut buf = [0u8; 8192];
+            let mut processor: ansi::Processor = ansi::Processor::new();
 
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        let text = String::from_utf8_lossy(&buf[..n]);
-                        let mut tb = buffer_clone.lock().unwrap();
-
-                        for ch in text.chars() {
-                            match ansi_state {
-                                AnsiState::Normal => match ch {
-                                    '\x1b' => {
-                                        ansi_state = AnsiState::Escape;
-                                    }
-                                    '\n' => tb.newline(),
-                                    '\r' => tb.carriage_return(),
-                                    '\x08' => tb.backspace(),
-                                    '\t' => tb.tab(),
-                                    '\x07' => {}
-                                    _ if ch.is_control() => {}
-                                    _ => tb.put_char(ch),
-                                },
-                                AnsiState::Escape => match ch {
-                                    '[' => {
-                                        ansi_state = AnsiState::CsiParam;
-                                        csi_params.clear();
-                                    }
-                                    ']' => {
-                                        ansi_state = AnsiState::OscString;
-                                    }
-                                    '(' | ')' | '*' | '+' => {
-                                        ansi_state = AnsiState::Normal;
-                                    }
-                                    _ => {
-                                        ansi_state = AnsiState::Normal;
-                                    }
-                                },
-                                AnsiState::CsiParam => {
-                                    if ch.is_ascii_alphabetic() || ch == '@' || ch == '`' {
-                                        // End of CSI — strip prefix chars (?, >, !, =)
-                                        let param_str = csi_params
-                                            .trim_start_matches(|c: char| c == '?' || c == '>' || c == '!' || c == '=');
-                                        let is_private = csi_params.starts_with('?');
-                                        let params: Vec<u16> = if param_str.is_empty() {
-                                            vec![0]
-                                        } else {
-                                            param_str
-                                                .split(|c: char| c == ';' || c == ':')
-                                                .filter_map(|s| s.parse().ok())
-                                                .collect()
-                                        };
-                                        if is_private {
-                                            tb.handle_dec_private(&params, ch);
-                                        } else {
-                                            tb.handle_csi(&params, ch);
-                                        }
-                                        ansi_state = AnsiState::Normal;
-                                    } else {
-                                        csi_params.push(ch);
-                                    }
-                                }
-                                AnsiState::OscString => {
-                                    if ch == '\x07' || ch == '\\' {
-                                        ansi_state = AnsiState::Normal;
-                                    }
-                                }
-                            }
-                        }
-
+                        let mut term = term_clone.lock().unwrap();
+                        processor.advance(&mut *term, &buf[..n]);
                         data_flag.store(true, Ordering::Relaxed);
                     }
                     Err(_) => break,
@@ -627,7 +216,7 @@ impl Terminal {
         });
 
         Ok(Self {
-            buffer,
+            term,
             writer: Some(writer),
             _reader_handle: Some(reader_handle),
             has_new_data,
@@ -644,19 +233,45 @@ impl Terminal {
         }
     }
 
-    pub fn get_visible_lines(&self, max_lines: usize) -> Vec<TerminalLine> {
-        let tb = self.buffer.lock().unwrap();
-        let lines = &tb.lines;
-        let start = if lines.len() > max_lines {
-            lines.len() - max_lines
-        } else {
-            0
-        };
-        lines[start..].to_vec()
+    /// Read visible lines from alacritty's grid for rendering
+    pub fn get_visible_lines(&self, _max_lines: usize) -> Vec<TerminalLine> {
+        use alacritty_terminal::index::{Line, Column};
+
+        let term = self.term.lock().unwrap();
+        let grid = term.grid();
+        let mut lines = Vec::new();
+
+        let total_lines = grid.screen_lines();
+
+        for line_idx in 0..total_lines {
+            let row = &grid[Line(line_idx as i32)];
+            let mut cells = Vec::new();
+
+            for col_idx in 0..grid.columns() {
+                let cell = &row[Column(col_idx)];
+                cells.push(convert_cell(cell));
+            }
+
+            // Trim trailing spaces (but keep lines with background colors)
+            while cells.last().map_or(false, |c| c.ch == ' ' && c.style.bg == TermColor::Default) {
+                cells.pop();
+            }
+
+            lines.push(TerminalLine { cells });
+        }
+
+        lines
+    }
+
+    /// Get cursor position (row in visible area, col)
+    pub fn cursor_position(&self) -> (usize, usize) {
+        let term = self.term.lock().unwrap();
+        let cursor = term.grid().cursor.point;
+        (cursor.line.0 as usize, cursor.column.0)
     }
 
     pub fn cursor_col(&self) -> usize {
-        self.buffer.lock().unwrap().cursor_col
+        self.cursor_position().1
     }
 
     pub fn check_and_clear_new_data(&self) -> bool {
