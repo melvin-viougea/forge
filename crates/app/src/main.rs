@@ -217,8 +217,9 @@ impl Render for RightPanel {
                     .child(
                         div()
                             .id("tab-changes")
+                            .w(px(140.))
+                            .h_full()
                             .flex()
-                            .flex_1()
                             .items_center()
                             .justify_center()
                             .cursor_pointer()
@@ -242,8 +243,9 @@ impl Render for RightPanel {
                     .child(
                         div()
                             .id("tab-files")
+                            .w(px(140.))
+                            .h_full()
                             .flex()
-                            .flex_1()
                             .items_center()
                             .justify_center()
                             .cursor_pointer()
