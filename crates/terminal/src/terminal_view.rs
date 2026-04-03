@@ -190,14 +190,18 @@ impl Render for TerminalView {
                     "home" => { this.terminal.write_input(b"\x1b[H"); true }
                     "end" => { this.terminal.write_input(b"\x1b[F"); true }
                     _ => {
-                        // Regular characters via key_char
-                        if let Some(key_char) = &ev.keystroke.key_char {
-                            if ev.keystroke.modifiers.control {
-                                let ch = ev.keystroke.key.chars().next().unwrap_or('c');
-                                let ctrl_byte = (ch as u8).wrapping_sub(b'a').wrapping_add(1);
+                        // Ctrl+letter (C, D, Z, etc.) — always handle, even without key_char
+                        if ev.keystroke.modifiers.control {
+                            let ch = ev.keystroke.key.chars().next().unwrap_or('c');
+                            if ch.is_ascii_alphabetic() {
+                                let ctrl_byte = (ch.to_ascii_lowercase() as u8) - b'a' + 1;
                                 this.terminal.write_input(&[ctrl_byte]);
                                 true
-                            } else if !ev.keystroke.modifiers.platform {
+                            } else {
+                                false
+                            }
+                        } else if let Some(key_char) = &ev.keystroke.key_char {
+                            if !ev.keystroke.modifiers.platform {
                                 this.terminal.write_input(key_char.as_bytes());
                                 true
                             } else {
