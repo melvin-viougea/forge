@@ -16,6 +16,7 @@ use alacritty_terminal::vte::ansi;
 pub struct Terminal {
     term: Arc<Mutex<Term<VoidListener>>>,
     writer: Option<Box<dyn Write + Send>>,
+    master_pty: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
     _reader_handle: Option<std::thread::JoinHandle<()>>,
     pub has_new_data: Arc<AtomicBool>,
     pub title: String,
@@ -216,9 +217,13 @@ impl Terminal {
             }
         });
 
+        let master_pty: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>> =
+            Arc::new(Mutex::new(pair.master));
+
         Ok(Self {
             term,
             writer: Some(writer),
+            master_pty,
             _reader_handle: Some(reader_handle),
             has_new_data,
             title,
@@ -240,12 +245,14 @@ impl Terminal {
 
         let term = self.term.lock().unwrap();
         let grid = term.grid();
+        let display_offset = grid.display_offset();
+        let total_lines = grid.screen_lines();
         let mut lines = Vec::new();
 
-        let total_lines = grid.screen_lines();
-
         for line_idx in 0..total_lines {
-            let row = &grid[Line(line_idx as i32)];
+            // Negative line indices = scrollback, positive = visible screen
+            let line = Line(line_idx as i32) - display_offset;
+            let row = &grid[line];
             let mut cells = Vec::new();
 
             for col_idx in 0..grid.columns() {
@@ -264,6 +271,35 @@ impl Terminal {
         lines
     }
 
+    /// Scroll the terminal view (positive = up into scrollback, negative = down)
+    pub fn scroll(&self, delta: i32) {
+        use alacritty_terminal::grid::Scroll;
+        let mut term = self.term.lock().unwrap();
+        term.grid_mut().scroll_display(Scroll::Delta(delta));
+    }
+
+    /// Scroll to bottom (follow mode)
+    pub fn scroll_to_bottom(&self) {
+        use alacritty_terminal::grid::Scroll;
+        let mut term = self.term.lock().unwrap();
+        term.grid_mut().scroll_display(Scroll::Bottom);
+    }
+
+    /// Check if we're scrolled up (not at bottom)
+    pub fn is_scrolled(&self) -> bool {
+        self.term.lock().unwrap().grid().display_offset() > 0
+    }
+
+    /// Get scroll info: (display_offset, total_history_lines, screen_lines)
+    pub fn scroll_info(&self) -> (usize, usize, usize) {
+        let term = self.term.lock().unwrap();
+        let grid = term.grid();
+        let offset = grid.display_offset();
+        let history = grid.history_size();
+        let screen = grid.screen_lines();
+        (offset, history, screen)
+    }
+
     /// Get cursor position (row in visible area, col)
     pub fn cursor_position(&self) -> (usize, usize) {
         let term = self.term.lock().unwrap();
@@ -273,6 +309,33 @@ impl Terminal {
 
     pub fn cursor_col(&self) -> usize {
         self.cursor_position().1
+    }
+
+    /// Resize the terminal to new dimensions (in characters)
+    pub fn resize(&mut self, cols: u16, rows: u16) {
+        if cols == self.cols && rows == self.rows {
+            return;
+        }
+        if cols == 0 || rows == 0 {
+            return;
+        }
+        self.cols = cols;
+        self.rows = rows;
+
+        // Resize the PTY
+        let _ = self.master_pty.lock().unwrap().resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        });
+
+        // Resize alacritty's term
+        let dims = TermDimensions {
+            columns: cols as usize,
+            screen_lines: rows as usize,
+        };
+        self.term.lock().unwrap().resize(dims);
     }
 
     pub fn check_and_clear_new_data(&self) -> bool {

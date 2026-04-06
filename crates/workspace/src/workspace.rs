@@ -64,7 +64,7 @@ impl Render for IdeWorkspace {
                                     .text_xs()
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(theme::blue())
-                                    .child("FORGE v0.9.1"),
+                                    .child("FORGE v0.9.2"),
                             ),
                     )
                     // Center spacer
@@ -93,6 +93,14 @@ impl Render for IdeWorkspace {
                                 })),
                         )
                     }),
+            )
+            // Divider between titlebar and content
+            .child(
+                div()
+                    .w_full()
+                    .h(px(1.))
+                    .flex_shrink_0()
+                    .bg(theme::surface1()),
             )
             // Main content row: left dock | center | right dock
             .child(
