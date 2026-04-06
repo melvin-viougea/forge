@@ -81,81 +81,80 @@ impl CommitPanel {
 
 impl Render for CommitPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let run_color = if self.is_running { colors::red() } else { colors::green() };
+        let run_label = if self.is_running { "◼ Stop" } else { "▶ Run" };
+        let push_label = if self.is_pushing { "Pushing..." } else { "↑ Push" };
+
         div()
             .flex()
-            .flex_col()
+            .flex_row()
             .items_center()
             .w_full()
+            .h(px(34.))
+            .min_h(px(34.))
+            .flex_shrink_0()
             .bg(colors::mantle())
-            .p(px(8.))
+            .px(px(8.))
             .gap(px(6.))
-            // Row: Run/Stop + Push
+            // Run / Stop
             .child(
                 div()
+                    .id("run-btn")
                     .flex()
-                    .flex_row()
-                    .w_full()
-                    .gap(px(6.))
-                    // Run / Stop button (50%)
-                    .child(
-                        div()
-                            .id("run-btn")
-                            .flex()
-                            .flex_1()
-                            .items_center()
-                            .justify_center()
-                            .h(px(32.))
-                            .bg(if self.is_running { colors::red() } else { colors::green() })
-                            .rounded(px(6.))
-                            .cursor_pointer()
-                            .text_sm()
-                            .text_color(rgb(0x0a0e14))
-                            .font_weight(FontWeight::BOLD)
-                            .hover(|d| d.bg(colors::surface1()))
-                            .child(if self.is_running { "◼ Stop" } else { "▶ Run" })
-                            .on_click(cx.listener(|this, _ev, _window, cx| {
-                                this.toggle_runner(cx);
-                                cx.notify();
-                            })),
-                    )
-                    // Push button (50%)
-                    .child(
-                        div()
-                            .id("push-btn")
-                            .flex()
-                            .flex_1()
-                            .items_center()
-                            .justify_center()
-                            .h(px(32.))
-                            .bg(colors::blue())
-                            .rounded(px(6.))
-                            .cursor_pointer()
-                            .text_sm()
-                            .text_color(rgb(0x0a0e14))
-                            .font_weight(FontWeight::BOLD)
-                            .hover(|d| d.bg(colors::lavender()))
-                            .child(if self.is_pushing { "Pushing..." } else { "Push" })
-                            .on_click(cx.listener(|this, _ev, _window, cx| {
-                                if this.is_pushing {
-                                    return;
-                                }
-                                this.is_pushing = true;
-                                cx.notify();
+                    .flex_1()
+                    .items_center()
+                    .justify_center()
+                    .h(px(24.))
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(run_color)
+                    .bg(colors::surface0())
+                    .hover(|d| d.bg(colors::surface1()))
+                    .child(run_label)
+                    .on_click(cx.listener(|this, _ev, _window, cx| {
+                        this.toggle_runner(cx);
+                        cx.notify();
+                    })),
+            )
+            // Push
+            .child(
+                div()
+                    .id("push-btn")
+                    .flex()
+                    .flex_1()
+                    .items_center()
+                    .justify_center()
+                    .h(px(24.))
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .text_xs()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(colors::blue())
+                    .bg(colors::surface0())
+                    .hover(|d| d.bg(colors::surface1()))
+                    .child(push_label)
+                    .on_click(cx.listener(|this, _ev, _window, cx| {
+                        if this.is_pushing {
+                            return;
+                        }
+                        this.is_pushing = true;
+                        cx.notify();
 
-                                let root = this.root_path.clone();
-                                cx.spawn(async |this: WeakEntity<CommitPanel>, cx: &mut AsyncApp| {
-                                    let result = cx.background_executor().spawn(async move {
-                                        crate::operations::one_button_commit_and_push(&root)
-                                    }).await;
+                        let root = this.root_path.clone();
+                        cx.spawn(async |this: WeakEntity<CommitPanel>, cx: &mut AsyncApp| {
+                            let result = cx.background_executor().spawn(async move {
+                                crate::operations::one_button_commit_and_push(&root)
+                            }).await;
 
-                                    this.update(cx, |view, cx| {
-                                        let _ = result;
-                                        view.is_pushing = false;
-                                        cx.notify();
-                                    }).ok();
-                                }).detach();
-                            })),
-                    ),
+                            this.update(cx, |view, cx| {
+                                let _ = result;
+                                view.is_pushing = false;
+                                cx.notify();
+                            }).ok();
+                        }).detach();
+                    })),
             )
     }
 }

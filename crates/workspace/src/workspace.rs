@@ -100,7 +100,7 @@ impl Render for IdeWorkspace {
                                     .text_xs()
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(theme::blue())
-                                    .child("FORGE v0.9.9"),
+                                    .child("FORGE v0.9.10"),
                             ),
                     )
                     // Right: settings gear

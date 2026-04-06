@@ -149,14 +149,19 @@ impl Render for ProjectPanel {
 
 // ── Right Panel (git + files per project) ────────────────────
 
+enum RightTab {
+    Changes,
+    Files,
+    Runner,
+}
+
 struct RightPanel {
     pub commit_panel: Entity<CommitPanel>,
     file_explorer: Entity<FileExplorerPanel>,
     git_changes: Entity<GitChangesPanel>,
     git_log: Entity<GitLogPanel>,
-    show_files: bool,
+    active_tab: RightTab,
     runner_terminal: Option<Entity<TerminalView>>,
-    runner_expanded: bool,
     log_expanded: bool,
 }
 
@@ -172,20 +177,21 @@ impl RightPanel {
             file_explorer,
             git_changes,
             git_log,
-            show_files: false,
+            active_tab: RightTab::Changes,
             runner_terminal: None,
-            runner_expanded: true,
             log_expanded: false,
         }
     }
 
     fn set_runner(&mut self, terminal: Entity<TerminalView>) {
         self.runner_terminal = Some(terminal);
-        self.runner_expanded = true;
     }
 
     fn clear_runner(&mut self) {
         self.runner_terminal = None;
+        if matches!(self.active_tab, RightTab::Runner) {
+            self.active_tab = RightTab::Changes;
+        }
     }
 }
 
@@ -193,135 +199,133 @@ impl Render for RightPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let change_count = self.git_changes.read(cx).change_count();
         let has_runner = self.runner_terminal.is_some();
-        let runner_expanded = self.runner_expanded;
+        let log_expanded = self.log_expanded;
+
+        let is_changes = matches!(self.active_tab, RightTab::Changes);
+        let is_files = matches!(self.active_tab, RightTab::Files);
+        let is_runner = matches!(self.active_tab, RightTab::Runner);
 
         div()
             .flex()
             .flex_col()
             .size_full()
             .bg(colors::mantle())
+            // ── Action bar (Run + Push) ──────────────────────
             .child(self.commit_panel.clone())
             .child(div().w_full().h(px(1.)).flex_shrink_0().bg(colors::surface1()))
-            // ── Runner section (collapsible) ──────────────────
-            .when(has_runner, |d: Div| {
-                d.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .w_full()
-                        .when(runner_expanded, |d: Div| d.flex_1().min_h(px(80.)))
-                        .child(
-                            // Header bar
-                            div()
-                                .id("runner-header")
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .w_full()
-                                .h(px(28.))
-                                .min_h(px(28.))
-                                .flex_shrink_0()
-                                .px(px(8.))
-                                .bg(colors::mantle())
-                                .border_b_1()
-                                .border_color(colors::surface1())
-                                .cursor_pointer()
-                                .hover(|d| d.bg(colors::surface0()))
-                                .text_xs()
-                                .text_color(colors::subtext())
-                                .child(if runner_expanded { "▼ " } else { "▶ " })
-                                .child("Runner")
-                                .on_click(cx.listener(|this, _ev, _window, cx| {
-                                    this.runner_expanded = !this.runner_expanded;
-                                    cx.notify();
-                                })),
-                        )
-                        .when_some(
-                            if runner_expanded { self.runner_terminal.clone() } else { None },
-                            |d: Div, terminal| {
-                                d.child(
-                                    div()
-                                        .flex_1()
-                                        .w_full()
-                                        .overflow_hidden()
-                                        .child(terminal),
-                                )
-                            },
-                        ),
-                )
-                .child(div().w_full().h(px(1.)).flex_shrink_0().bg(colors::surface1()))
-            })
+            // ── Tabs ─────────────────────────────────────────
             .child(
                 div()
                     .flex()
                     .flex_row()
                     .w_full()
-                    .h(px(28.))
-                    .min_h(px(28.))
+                    .h(px(30.))
+                    .min_h(px(30.))
                     .flex_shrink_0()
                     .bg(colors::mantle())
                     .border_b_1()
                     .border_color(colors::surface1())
+                    // Changes tab
                     .child(
                         div()
                             .id("tab-changes")
-                            .w(px(140.))
+                            .flex_1()
                             .h_full()
                             .flex()
                             .items_center()
                             .justify_center()
                             .cursor_pointer()
                             .text_xs()
-                            .when(!self.show_files, |d: Stateful<Div>| {
-                                d.text_color(colors::text()).border_b_2().border_color(colors::blue())
+                            .when(is_changes, |d: Stateful<Div>| {
+                                d.text_color(colors::text())
+                                    .border_b_2()
+                                    .border_color(colors::blue())
                             })
-                            .when(self.show_files, |d: Stateful<Div>| {
-                                d.text_color(colors::subtext()).hover(|d| d.text_color(colors::text()))
+                            .when(!is_changes, |d: Stateful<Div>| {
+                                d.text_color(colors::subtext())
+                                    .hover(|d| d.text_color(colors::text()))
                             })
                             .child(format!("Changes ({})", change_count))
                             .on_click(cx.listener(|this, _ev, _window, cx| {
-                                this.show_files = false;
+                                this.active_tab = RightTab::Changes;
                                 cx.notify();
                             })),
                     )
+                    // Files tab
                     .child(
                         div()
                             .id("tab-files")
-                            .w(px(140.))
+                            .flex_1()
                             .h_full()
                             .flex()
                             .items_center()
                             .justify_center()
                             .cursor_pointer()
                             .text_xs()
-                            .when(self.show_files, |d: Stateful<Div>| {
-                                d.text_color(colors::text()).border_b_2().border_color(colors::blue())
+                            .when(is_files, |d: Stateful<Div>| {
+                                d.text_color(colors::text())
+                                    .border_b_2()
+                                    .border_color(colors::blue())
                             })
-                            .when(!self.show_files, |d: Stateful<Div>| {
-                                d.text_color(colors::subtext()).hover(|d| d.text_color(colors::text()))
+                            .when(!is_files, |d: Stateful<Div>| {
+                                d.text_color(colors::subtext())
+                                    .hover(|d| d.text_color(colors::text()))
                             })
                             .child("Files")
                             .on_click(cx.listener(|this, _ev, _window, cx| {
-                                this.show_files = true;
+                                this.active_tab = RightTab::Files;
                                 cx.notify();
                             })),
-                    ),
+                    )
+                    // Runner tab
+                    .when(has_runner, |d: Div| {
+                        d.child(
+                            div()
+                                .id("tab-runner")
+                                .flex_1()
+                                .h_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .text_xs()
+                                .when(is_runner, |d: Stateful<Div>| {
+                                    d.text_color(colors::text())
+                                        .border_b_2()
+                                        .border_color(colors::blue())
+                                })
+                                .when(!is_runner, |d: Stateful<Div>| {
+                                    d.text_color(colors::subtext())
+                                        .hover(|d| d.text_color(colors::text()))
+                                })
+                                .child("Runner")
+                                .on_click(cx.listener(|this, _ev, _window, cx| {
+                                    this.active_tab = RightTab::Runner;
+                                    cx.notify();
+                                })),
+                        )
+                    }),
             )
+            // ── Content area ─────────────────────────────────
             .child(
                 div()
                     .flex_1()
                     .overflow_hidden()
-                    .when(!self.show_files, |d: Div| d.child(self.git_changes.clone()))
-                    .when(self.show_files, |d: Div| d.child(self.file_explorer.clone())),
+                    .when(is_changes, |d: Div| d.child(self.git_changes.clone()))
+                    .when(is_files, |d: Div| d.child(self.file_explorer.clone()))
+                    .when_some(
+                        if is_runner { self.runner_terminal.clone() } else { None },
+                        |d: Div, terminal| d.child(terminal),
+                    ),
             )
-            // ── Git Log section (collapsible, bottom) ────────────
+            // ── Git Log section (collapsible, bottom) ────────
             .child(div().w_full().h(px(1.)).flex_shrink_0().bg(colors::surface1()))
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .w_full()
-                    .when(self.log_expanded, |d: Div| d.flex_1().min_h(px(80.)))
+                    .when(log_expanded, |d: Div| d.flex_1().min_h(px(100.)))
                     .child(
                         div()
                             .id("log-header")
@@ -338,14 +342,14 @@ impl Render for RightPanel {
                             .hover(|d| d.bg(colors::surface0()))
                             .text_xs()
                             .text_color(colors::subtext())
-                            .child(if self.log_expanded { "▼ " } else { "▲ " })
+                            .child(if log_expanded { "▼ " } else { "▲ " })
                             .child("Git Log")
                             .on_click(cx.listener(|this, _ev, _window, cx| {
                                 this.log_expanded = !this.log_expanded;
                                 cx.notify();
                             })),
                     )
-                    .when(self.log_expanded, |d: Div| {
+                    .when(log_expanded, |d: Div| {
                         d.child(
                             div()
                                 .flex_1()
@@ -512,13 +516,18 @@ impl AppView {
                     }).detach();
                 }
                 RunnerEvent::Stop => {
-                    let state = &this.project_states[project_idx];
+                    let state = &mut this.project_states[project_idx];
                     // Send Ctrl+C to stop the running process
                     if let Some(ref terminal) = state.runner_terminal {
                         terminal.update(cx, |view, _cx| {
                             view.terminal.write_input(&[3]); // Ctrl+C
                         });
                     }
+                    state.runner_terminal = None;
+                    state.right_panel.update(cx, |panel, cx| {
+                        panel.clear_runner();
+                        cx.notify();
+                    });
                 }
             }
         });
