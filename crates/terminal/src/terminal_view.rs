@@ -79,7 +79,7 @@ impl TerminalView {
     }
 
     pub fn new_in(title: String, working_dir: Option<std::path::PathBuf>, cx: &mut Context<Self>) -> Self {
-        let terminal = Terminal::new(title, 120, 40, working_dir).expect("Failed to create terminal");
+        let terminal = Terminal::new(title, 80, 24, working_dir).expect("Failed to create terminal");
         let focus_handle = cx.focus_handle();
 
         let poll_task = cx.spawn(async |this: WeakEntity<Self>, cx: &mut AsyncApp| {
@@ -246,7 +246,6 @@ fn render_span(text: String, style: &CellStyle, bold: bool, selected: bool) -> D
 /// Render a terminal line as a row of per-cell divs, applying selection highlight.
 fn render_line_sel(line: &TerminalLine, row_idx: usize, selection: Option<&Selection>) -> Div {
     let mut row = div()
-        .w_full()
         .min_h(px(18.))
         .flex()
         .flex_row()
@@ -296,7 +295,6 @@ fn render_line_with_cursor_sel(
 ) -> Div {
     let cells = &line.cells;
     let mut row = div()
-        .w_full()
         .min_h(px(18.))
         .flex()
         .flex_row()
@@ -309,7 +307,6 @@ fn render_line_with_cursor_sel(
     // Before cursor — render per-cell with selection
     if cursor_col > 0 {
         row = div()
-            .w_full()
             .min_h(px(18.))
             .flex()
             .flex_row()
@@ -361,6 +358,17 @@ impl Render for TerminalView {
             cx.focus_self(window);
         }
 
+        // Measure actual font advance width dynamically
+        let char_advance = {
+            let text_system = window.text_system();
+            let f = font("MesloLGS NF");
+            let font_id = text_system.resolve_font(&f);
+            let font_size = px(0.875 * 16.0); // text_sm = 0.875rem = 14px
+            text_system.advance(font_id, font_size, 'a')
+                .map(|s| { let w: f32 = s.width.into(); w })
+                .unwrap_or(CHAR_WIDTH)
+        };
+
         // Resize terminal based on window viewport
         let viewport = window.viewport_size();
         let available_w: f32 = viewport.width.into();
@@ -372,12 +380,13 @@ impl Render for TerminalView {
             let h = ((available_h - 200.0) / 2.0).max(80.0);
             (w, h)
         } else {
-            // Center pane: full width minus left dock(200) + pane sidebar(240) + right dock(280) + padding
-            let w = (available_w - 750.0).max(200.0);
+            // Center pane: full width minus left dock(200) + pane sidebar(240) + right dock(280)
+            // + terminal padding(16) + scrollbar(10) = 746
+            let w = (available_w - 746.0).max(200.0);
             let h = (available_h - 50.0).max(100.0);
             (w, h)
         };
-        let new_cols = (term_w / 8.4) as u16;
+        let new_cols = ((term_w / char_advance).floor() as u16).saturating_sub(5);
         let new_rows = (term_h / 18.0) as u16;
         let new_size = (new_cols, new_rows);
         if self.last_size != Some(new_size) {
@@ -553,6 +562,7 @@ impl Render for TerminalView {
             .child(
                 div()
                     .flex_1()
+                    .min_w_0()
                     .flex()
                     .flex_col()
                     .overflow_hidden()

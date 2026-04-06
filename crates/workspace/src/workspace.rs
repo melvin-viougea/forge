@@ -64,7 +64,7 @@ impl Render for IdeWorkspace {
                             .h_full()
                             .flex_1()
                             .when(!is_fullscreen, |d| d.pl(px(78.)))
-                            .when(is_fullscreen, |d| d.pl(px(0.)))
+                            .when(is_fullscreen, |d| d.pl(px(8.)))
                             .when_some(self.update_version.clone(), |d: Div, _version| {
                                 d.child(
                                     div()
@@ -74,7 +74,7 @@ impl Render for IdeWorkspace {
                                         .items_center()
                                         .gap(px(4.))
                                         .px(px(10.))
-                                        .py(px(4.))
+                                        .py(px(2.))
                                         .bg(theme::surface0())
                                         .rounded(px(4.))
                                         .cursor_pointer()
@@ -100,7 +100,7 @@ impl Render for IdeWorkspace {
                                     .text_xs()
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(theme::blue())
-                                    .child("FORGE v0.9.10"),
+                                    .child("FORGE v0.9.11"),
                             ),
                     )
                     // Right: settings gear
