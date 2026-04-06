@@ -411,10 +411,21 @@ fn main() {
                                         }).await;
                                         match result {
                                             Ok(()) => updater::relaunch(),
-                                            Err(_e) => {
-                                                let _ = std::process::Command::new("open")
-                                                    .arg("https://github.com/melvin-viougea/forge/releases/latest")
-                                                    .spawn();
+                                            Err(e) => {
+                                                log::error!("Auto-update failed: {}. Retrying with redownload...", e);
+                                                // Retry once more
+                                                let info2 = updater::check_for_update();
+                                                if let Some(info2) = info2 {
+                                                    match updater::download_and_install(&info2) {
+                                                        Ok(()) => updater::relaunch(),
+                                                        Err(e2) => {
+                                                            log::error!("Retry failed: {}. Opening releases page.", e2);
+                                                            let _ = std::process::Command::new("open")
+                                                                .arg("https://github.com/melvin-viougea/forge/releases/latest")
+                                                                .spawn();
+                                                        }
+                                                    }
+                                                }
                                             }
                                         }
                                     }).detach();

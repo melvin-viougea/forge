@@ -64,7 +64,7 @@ impl Render for IdeWorkspace {
                                     .text_xs()
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(theme::blue())
-                                    .child("FORGE v0.9.2"),
+                                    .child("FORGE v0.9.3"),
                             ),
                     )
                     // Center spacer
