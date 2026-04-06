@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-pub const CURRENT_VERSION: &str = "0.9.4";
+pub const CURRENT_VERSION: &str = "0.9.5";
 const GITHUB_REPO: &str = "melvin-viougea/forge";
 
 #[derive(Clone, Debug)]
@@ -30,7 +30,7 @@ pub fn check_for_update() -> Option<UpdateInfo> {
     let version = tag.trim_start_matches('v').to_string();
 
     if is_newer(&version, CURRENT_VERSION) {
-        let download_url = extract_tar_gz_url(&body)
+        let download_url = extract_dmg_url(&body)
             .unwrap_or_else(|| {
                 format!("https://github.com/{}/releases/tag/{}", GITHUB_REPO, tag)
             });
@@ -41,19 +41,18 @@ pub fn check_for_update() -> Option<UpdateInfo> {
     }
 }
 
-/// Download and install update
+/// Download and install update from DMG
 pub fn download_and_install(info: &UpdateInfo) -> Result<(), String> {
-    let tar_path = "/tmp/forge-update.tar.gz";
-    let extract_dir = "/tmp/forge-update";
+    let dmg_path = "/tmp/forge-update.dmg";
+    let mount_point = "/tmp/forge-update-mount";
 
     // Clean previous attempt
-    let _ = std::fs::remove_file(tar_path);
-    let _ = std::fs::remove_dir_all(extract_dir);
-    let _ = std::fs::create_dir_all(extract_dir);
+    let _ = std::fs::remove_file(dmg_path);
+    let _ = Command::new("hdiutil").args(["detach", mount_point, "-quiet"]).status();
 
     // Download
     let status = Command::new("curl")
-        .args(["-L", "-s", "-o", tar_path, &info.download_url])
+        .args(["-L", "-s", "-o", dmg_path, &info.download_url])
         .status()
         .map_err(|e| format!("Download failed: {}", e))?;
 
@@ -61,24 +60,24 @@ pub fn download_and_install(info: &UpdateInfo) -> Result<(), String> {
         return Err("Download failed".to_string());
     }
 
-    // Extract
-    let status = Command::new("tar")
-        .args(["-xzf", tar_path, "-C", extract_dir])
+    // Mount DMG
+    let status = Command::new("hdiutil")
+        .args(["attach", dmg_path, "-mountpoint", mount_point, "-nobrowse", "-quiet"])
         .status()
-        .map_err(|e| format!("Extract failed: {}", e))?;
+        .map_err(|e| format!("Mount failed: {}", e))?;
 
     if !status.success() {
-        return Err("Extract failed".to_string());
+        return Err("Mount DMG failed".to_string());
+    }
+
+    let new_app = format!("{}/Forge.app", mount_point);
+    if !std::path::Path::new(&new_app).exists() {
+        let _ = Command::new("hdiutil").args(["detach", mount_point, "-quiet"]).status();
+        return Err("Forge.app not found in DMG".to_string());
     }
 
     // Find the app bundle to replace
     let app_path = find_app_bundle()?;
-
-    // Verify extracted app exists
-    let new_app = format!("{}/Forge.app", extract_dir);
-    if !std::path::Path::new(&new_app).exists() {
-        return Err("Extracted app not found".to_string());
-    }
 
     // Remove old app and replace with new one
     let _ = std::fs::remove_dir_all(&app_path);
@@ -87,13 +86,13 @@ pub fn download_and_install(info: &UpdateInfo) -> Result<(), String> {
         .status()
         .map_err(|e| format!("Install failed: {}", e))?;
 
+    // Unmount and cleanup
+    let _ = Command::new("hdiutil").args(["detach", mount_point, "-quiet"]).status();
+    let _ = std::fs::remove_file(dmg_path);
+
     if !status.success() {
         return Err("Failed to copy new version".to_string());
     }
-
-    // Cleanup
-    let _ = std::fs::remove_file(tar_path);
-    let _ = std::fs::remove_dir_all(extract_dir);
 
     Ok(())
 }
@@ -149,12 +148,12 @@ fn extract_json_string(json: &str, key: &str) -> Option<String> {
     }
 }
 
-fn extract_tar_gz_url(json: &str) -> Option<String> {
+fn extract_dmg_url(json: &str) -> Option<String> {
     let mut search_from = 0;
     while let Some(pos) = json[search_from..].find("browser_download_url") {
         let abs_pos = search_from + pos;
         if let Some(url) = extract_json_string(&json[abs_pos..], "browser_download_url") {
-            if url.ends_with(".tar.gz") {
+            if url.ends_with(".dmg") {
                 return Some(url);
             }
         }

@@ -37,11 +37,8 @@ if [ -f "AppIcon.icns" ]; then
     cp AppIcon.icns "$APP_DIR/Contents/Resources/AppIcon.icns"
 fi
 
-echo "==> Compressing..."
-cd target/release
-tar -czf "Forge-v${VERSION}-macos-arm64.tar.gz" "Forge.app"
-
 echo "==> Creating DMG..."
+cd target/release
 STAGING=$(mktemp -d)
 cp -r Forge.app "$STAGING/"
 ln -s /Applications "$STAGING/Applications"
@@ -52,7 +49,6 @@ echo "==> Publishing GitHub Release v$VERSION..."
 gh release create "v$VERSION" \
     --title "Forge v$VERSION" \
     --notes "$DESCRIPTION" \
-    "target/release/Forge-v${VERSION}-macos-arm64.tar.gz" \
     "target/release/Forge-v${VERSION}.dmg"
 
 echo "==> Done! Release v$VERSION published."
