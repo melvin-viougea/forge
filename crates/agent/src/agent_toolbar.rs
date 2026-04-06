@@ -58,7 +58,7 @@ impl Render for AgentToolbar {
             .flex_col()
             .w_full()
             .bg(colors::mantle())
-            .text_xs()
+            .text_sm()
             // Header with "New Agent" button
             .child(
                 div()

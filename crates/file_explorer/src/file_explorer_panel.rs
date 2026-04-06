@@ -290,7 +290,7 @@ impl Render for FileExplorerPanel {
             .bg(colors::mantle())
             .id("file-explorer-scroll")
             .overflow_y_scroll()
-            .text_xs()
+            .text_sm()
             .font_family("Berkeley Mono, SF Mono, Menlo, monospace")
             // File list
             .children(
@@ -368,7 +368,7 @@ impl Render for FileExplorerPanel {
                                     .border_color(colors::surface1())
                                     .rounded(px(6.))
                                     .py(px(4.))
-                                    .text_xs()
+                                    .text_sm()
                                     .shadow_lg()
                                     .child(render_menu_item("ctx-new-file", "New File", "new_file", target_idx, cx, colors::text()))
                                     .child(render_menu_item("ctx-new-folder", "New Folder", "new_folder", target_idx, cx, colors::text()))

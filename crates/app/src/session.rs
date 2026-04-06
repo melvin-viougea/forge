@@ -10,29 +10,60 @@ fn dirs_next() -> Option<PathBuf> {
     std::env::var("HOME").ok().map(PathBuf::from)
 }
 
-/// Saved session: list of project paths + which was active
+/// Layout dimensions to persist
+#[derive(Clone)]
+pub struct SavedLayout {
+    pub left_dock_width: f32,
+    pub right_dock_width: f32,
+    pub pane_sidebar_width: f32,
+    pub log_height: f32,
+    pub log_expanded: bool,
+}
+
+impl Default for SavedLayout {
+    fn default() -> Self {
+        Self {
+            left_dock_width: 200.,
+            right_dock_width: 280.,
+            pane_sidebar_width: 240.,
+            log_height: 250.,
+            log_expanded: false,
+        }
+    }
+}
+
+/// Saved session: list of project paths + which was active + layout
 pub struct SavedSession {
     pub projects: Vec<PathBuf>,
     pub active: usize,
+    pub layout: SavedLayout,
 }
 
 /// Save the current session to ~/.forge/session.json
-pub fn save(projects: &[PathBuf], active: usize) {
+pub fn save(projects: &[PathBuf], active: usize, layout: &SavedLayout) {
     let Some(path) = session_path() else { return };
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
 
-    // Simple JSON: {"active":0,"projects":["/path/a","/path/b"]}
     let paths_json: Vec<String> = projects
         .iter()
         .map(|p| format!("\"{}\"", p.display().to_string().replace('\\', "\\\\").replace('"', "\\\"")))
         .collect();
 
     let json = format!(
-        "{{\"active\":{},\"projects\":[{}]}}",
+        concat!(
+            "{{\"active\":{},\"projects\":[{}],",
+            "\"left_dock_width\":{},\"right_dock_width\":{},",
+            "\"pane_sidebar_width\":{},\"log_height\":{},\"log_expanded\":{}}}"
+        ),
         active,
-        paths_json.join(",")
+        paths_json.join(","),
+        layout.left_dock_width,
+        layout.right_dock_width,
+        layout.pane_sidebar_width,
+        layout.log_height,
+        layout.log_expanded,
     );
 
     let _ = std::fs::write(&path, json);
@@ -58,9 +89,19 @@ pub fn load() -> Option<SavedSession> {
         return None;
     }
 
+    // Parse layout fields (with defaults)
+    let layout = SavedLayout {
+        left_dock_width: parse_float(&content, "left_dock_width").unwrap_or(200.),
+        right_dock_width: parse_float(&content, "right_dock_width").unwrap_or(280.),
+        pane_sidebar_width: parse_float(&content, "pane_sidebar_width").unwrap_or(240.),
+        log_height: parse_float(&content, "log_height").unwrap_or(250.),
+        log_expanded: parse_bool(&content, "log_expanded").unwrap_or(false),
+    };
+
     Some(SavedSession {
         active: active.min(projects.len().saturating_sub(1)),
         projects,
+        layout,
     })
 }
 
@@ -72,6 +113,31 @@ fn parse_number(json: &str, key: &str) -> Option<usize> {
     let value_str = after[colon + 1..].trim_start();
     let end = value_str.find(|c: char| !c.is_ascii_digit())?;
     value_str[..end].parse().ok()
+}
+
+fn parse_float(json: &str, key: &str) -> Option<f32> {
+    let pattern = format!("\"{}\"", key);
+    let start = json.find(&pattern)?;
+    let after = &json[start + pattern.len()..];
+    let colon = after.find(':')?;
+    let value_str = after[colon + 1..].trim_start();
+    let end = value_str.find(|c: char| !c.is_ascii_digit() && c != '.')?;
+    value_str[..end].parse().ok()
+}
+
+fn parse_bool(json: &str, key: &str) -> Option<bool> {
+    let pattern = format!("\"{}\"", key);
+    let start = json.find(&pattern)?;
+    let after = &json[start + pattern.len()..];
+    let colon = after.find(':')?;
+    let value_str = after[colon + 1..].trim_start();
+    if value_str.starts_with("true") {
+        Some(true)
+    } else if value_str.starts_with("false") {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 fn parse_string_array(json: &str, key: &str) -> Option<Vec<String>> {

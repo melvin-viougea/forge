@@ -119,7 +119,7 @@ impl Render for DiffView {
             .bg(colors::base())
             .id("diff-view-scroll")
             .overflow_y_scroll()
-            .text_xs()
+            .text_sm()
             .font_family("Berkeley Mono, SF Mono, Menlo, monospace")
             // Header
             .child(

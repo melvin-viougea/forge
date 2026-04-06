@@ -28,6 +28,7 @@ pub enum WorkspaceEvent {
     SettingsClicked,
     RunClicked,
     PushClicked,
+    LayoutChanged,
 }
 
 impl EventEmitter<WorkspaceEvent> for IdeWorkspace {}
@@ -77,8 +78,11 @@ impl IdeWorkspace {
         cx.notify();
     }
 
-    fn stop_drag(&mut self) {
-        self.dragging = None;
+    fn stop_drag(&mut self, cx: &mut Context<Self>) {
+        if self.dragging.is_some() {
+            self.dragging = None;
+            cx.emit(WorkspaceEvent::LayoutChanged);
+        }
     }
 }
 
@@ -107,8 +111,8 @@ impl Render for IdeWorkspace {
                     this.update_drag(x, cx);
                 }
             }))
-            .on_mouse_up(MouseButton::Left, cx.listener(|this, _ev: &MouseUpEvent, _window, _cx| {
-                this.stop_drag();
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _ev: &MouseUpEvent, _window, cx| {
+                this.stop_drag(cx);
             }))
             // Titlebar
             .child(
@@ -144,7 +148,7 @@ impl Render for IdeWorkspace {
                                         .bg(theme::surface0())
                                         .rounded(px(4.))
                                         .cursor_pointer()
-                                        .text_xs()
+                                        .text_sm()
                                         .text_color(theme::blue())
                                         .hover(|d| d.bg(theme::surface1()))
                                         .child("Update Available")
@@ -163,7 +167,7 @@ impl Render for IdeWorkspace {
                             .h_full()
                             .child(
                                 div()
-                                    .text_xs()
+                                    .text_sm()
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(theme::blue())
                                     .child("FORGE v0.9.11"),
@@ -191,7 +195,7 @@ impl Render for IdeWorkspace {
                                     .h(px(28.))
                                     .rounded(px(4.))
                                     .cursor_pointer()
-                                    .text_size(px(16.))
+                                    .text_size(px(13.))
                                     .text_color(run_color)
                                     .hover(|d| d.text_color(theme::text()).bg(theme::surface0()))
                                     .child(if self.is_running { "◼" } else { "▶" })
@@ -211,9 +215,9 @@ impl Render for IdeWorkspace {
                                     .rounded(px(4.))
                                     .cursor_pointer()
                                     .text_size(px(16.))
-                                    .text_color(theme::overlay())
-                                    .hover(|d| d.text_color(theme::text()).bg(theme::surface0()))
-                                    .child("↑")
+                                    .text_color(theme::blue())
+                                    .hover(|d| d.text_color(theme::lavender()).bg(theme::surface0()))
+                                    .child(div().font_family("MesloLGS NF").child("\u{e726}"))
                                     .on_click(cx.listener(|_this, _ev, _window, cx| {
                                         cx.emit(WorkspaceEvent::PushClicked);
                                     })),

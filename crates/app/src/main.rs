@@ -23,6 +23,7 @@ impl EventEmitter<ProjectPanelEvent> for ProjectPanel {}
 enum ProjectPanelEvent {
     AddProjectRequested,
     ProjectSelected(usize, PathBuf),
+    ProjectClosed(usize),
 }
 
 struct ProjectEntry {
@@ -73,7 +74,7 @@ impl Render for ProjectPanel {
             .flex_col()
             .size_full()
             .bg(colors::mantle())
-            .text_xs()
+            .text_sm()
             // New Workspace button
             .child(
                 div()
@@ -89,7 +90,7 @@ impl Render for ProjectPanel {
                             .h(px(32.))
                             .rounded(px(6.))
                             .cursor_pointer()
-                            .text_xs()
+                            .text_sm()
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(colors::subtext())
                             .bg(colors::surface0())
@@ -111,13 +112,12 @@ impl Render for ProjectPanel {
                     .children(self.projects.iter().enumerate().map(|(idx, project)| {
                         let is_active = active == Some(idx);
                         let path = project.path.clone();
+                        let count = self.projects.len();
                         div()
                             .id(ElementId::Name(format!("project-{}", idx).into()))
                             .flex()
-                            .flex_col()
-                            .w_full()
-                            .flex()
-                            .flex_col()
+                            .flex_row()
+                            .items_center()
                             .w_full()
                             .px(px(10.))
                             .py(px(12.))
@@ -132,11 +132,39 @@ impl Render for ProjectPanel {
                             // Project name
                             .child(
                                 div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .truncate()
                                     .text_sm()
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(if is_active { gpui::rgb(0xffffff) } else { colors::text() })
                                     .child(project.name.clone()),
                             )
+                            // Close button
+                            .when(count > 1, |d: Stateful<Div>| {
+                                d.child(
+                                    div()
+                                        .id(ElementId::Name(format!("close-project-{}", idx).into()))
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .w(px(16.))
+                                        .h(px(16.))
+                                        .rounded(px(3.))
+                                        .text_sm()
+                                        .text_color(if is_active { gpui::rgb(0xffffffaa) } else { colors::overlay() })
+                                        .cursor_pointer()
+                                        .hover(|d| d.text_color(colors::text()).bg(colors::surface0()))
+                                        .child("×")
+                                        .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+                                            cx.stop_propagation();
+                                        })
+                                        .on_click(cx.listener(move |this, _ev, _window, cx| {
+                                            cx.emit(ProjectPanelEvent::ProjectClosed(idx));
+                                        })),
+                                )
+                            })
                             .on_click(cx.listener(move |this, _ev, _window, cx| {
                                 this.active_project = Some(idx);
                                 cx.emit(ProjectPanelEvent::ProjectSelected(idx, path.clone()));
@@ -162,8 +190,8 @@ struct RightPanel {
     git_log: Entity<GitLogPanel>,
     active_tab: RightTab,
     runner_terminal: Option<Entity<TerminalView>>,
-    log_expanded: bool,
-    log_height: f32,
+    pub log_expanded: bool,
+    pub log_height: f32,
     dragging_log: bool,
     drag_start_y: f32,
     drag_start_height: f32,
@@ -203,6 +231,12 @@ impl RightPanel {
     }
 }
 
+pub enum RightPanelEvent {
+    LayoutChanged,
+}
+
+impl EventEmitter<RightPanelEvent> for RightPanel {}
+
 impl Render for RightPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let change_count = self.git_changes.read(cx).change_count();
@@ -232,8 +266,11 @@ impl Render for RightPanel {
                     cx.notify();
                 }
             }))
-            .on_mouse_up(MouseButton::Left, cx.listener(|this, _ev: &MouseUpEvent, _window, _cx| {
-                this.dragging_log = false;
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _ev: &MouseUpEvent, _window, cx| {
+                if this.dragging_log {
+                    this.dragging_log = false;
+                    cx.emit(RightPanelEvent::LayoutChanged);
+                }
             }))
             // ── Tabs ─────────────────────────────────────────
             .child(
@@ -257,7 +294,7 @@ impl Render for RightPanel {
                             .items_center()
                             .justify_center()
                             .cursor_pointer()
-                            .text_xs()
+                            .text_sm()
                             .when(is_changes, |d: Stateful<Div>| {
                                 d.text_color(colors::text())
                                     .border_b_2()
@@ -283,7 +320,7 @@ impl Render for RightPanel {
                             .items_center()
                             .justify_center()
                             .cursor_pointer()
-                            .text_xs()
+                            .text_sm()
                             .when(is_files, |d: Stateful<Div>| {
                                 d.text_color(colors::text())
                                     .border_b_2()
@@ -310,7 +347,7 @@ impl Render for RightPanel {
                                 .items_center()
                                 .justify_center()
                                 .cursor_pointer()
-                                .text_xs()
+                                .text_sm()
                                 .when(is_runner, |d: Stateful<Div>| {
                                     d.text_color(colors::text())
                                         .border_b_2()
@@ -384,12 +421,13 @@ impl Render for RightPanel {
                             .bg(colors::mantle())
                             .cursor_pointer()
                             .hover(|d| d.bg(colors::surface0()))
-                            .text_xs()
+                            .text_sm()
                             .text_color(colors::subtext())
                             .child(if log_expanded { "▼ " } else { "▲ " })
                             .child("Git Log")
                             .on_click(cx.listener(|this, _ev, _window, cx| {
                                 this.log_expanded = !this.log_expanded;
+                                cx.emit(RightPanelEvent::LayoutChanged);
                                 cx.notify();
                             })),
                     )
@@ -415,6 +453,7 @@ struct ProjectState {
     runner_terminal: Option<Entity<TerminalView>>,
     _pane_sub: Subscription,
     _runner_sub: Subscription,
+    _right_panel_sub: Subscription,
 }
 
 // ── AppView ──────────────────────────────────────────────────
@@ -433,10 +472,33 @@ struct AppView {
 }
 
 impl AppView {
-    fn save_session(&self) {
+    fn save_session(&self, cx: &App) {
         let paths: Vec<PathBuf> = self.project_states.iter().map(|s| s.path.clone()).collect();
         let active = self.active_project.unwrap_or(0);
-        session::save(&paths, active);
+
+        let ws = self.workspace.read(cx);
+        let left_w = ws.left_dock.read(cx).width();
+        let right_w = ws.right_dock.read(cx).width();
+        let sidebar_w = ws.center_pane.read(cx).sidebar_width();
+
+        // Read log layout from the active project's right panel
+        let (log_height, log_expanded) = self.active_project
+            .and_then(|idx| self.project_states.get(idx))
+            .map(|ps| {
+                let rp = ps.right_panel.read(cx);
+                (rp.log_height, rp.log_expanded)
+            })
+            .unwrap_or((250., false));
+
+        let layout = session::SavedLayout {
+            left_dock_width: left_w,
+            right_dock_width: right_w,
+            pane_sidebar_width: sidebar_w,
+            log_height,
+            log_expanded,
+        };
+
+        session::save(&paths, active, &layout);
     }
 }
 
@@ -485,6 +547,9 @@ impl AppView {
                         }).detach();
                     }
                     cx.notify();
+                }
+                PaneEvent::LayoutChanged => {
+                    this.save_session(cx);
                 }
             }
         });
@@ -586,6 +651,14 @@ impl AppView {
             }
         });
 
+        let right_panel_sub = cx.subscribe(&right_panel, |this: &mut AppView, _rp, event: &RightPanelEvent, cx| {
+            match event {
+                RightPanelEvent::LayoutChanged => {
+                    this.save_session(cx);
+                }
+            }
+        });
+
         let state = ProjectState {
             path,
             pane,
@@ -593,6 +666,7 @@ impl AppView {
             runner_terminal: None,
             _pane_sub: pane_sub,
             _runner_sub: runner_sub,
+            _right_panel_sub: right_panel_sub,
         };
 
         self.project_states.push(state);
@@ -609,7 +683,7 @@ impl AppView {
 
         // Switch to this project
         self.switch_project(idx, cx);
-        self.save_session();
+        self.save_session(cx);
     }
 
     fn switch_project(&mut self, idx: usize, cx: &mut Context<Self>) {
@@ -773,6 +847,29 @@ fn main() {
                                     cx.notify();
                                 });
                             }
+                            ProjectPanelEvent::ProjectClosed(idx) => {
+                                let idx = *idx;
+                                if this.project_states.len() <= 1 {
+                                    return;
+                                }
+                                this.project_states.remove(idx);
+                                this.project_panel.update(cx, |panel, cx| {
+                                    panel.projects.remove(idx);
+                                    cx.notify();
+                                });
+                                // Switch to a valid project
+                                let new_idx = if idx >= this.project_states.len() {
+                                    this.project_states.len() - 1
+                                } else {
+                                    idx
+                                };
+                                this.switch_project(new_idx, cx);
+                                this.project_panel.update(cx, |panel, cx| {
+                                    panel.active_project = Some(new_idx);
+                                    cx.notify();
+                                });
+                                this.save_session(cx);
+                            }
                         }
                     });
 
@@ -861,6 +958,9 @@ fn main() {
                                     });
                                 }
                             }
+                            WorkspaceEvent::LayoutChanged => {
+                                this.save_session(cx);
+                            }
                             WorkspaceEvent::PushClicked => {
                                 if let Some(idx) = this.active_project {
                                     let commit_panel = this.project_states[idx].right_panel.read(cx).commit_panel.clone();
@@ -937,6 +1037,14 @@ fn main() {
 
                     // Restore previous session
                     if let Some(saved) = session::load() {
+                        // Restore layout dimensions
+                        let layout = &saved.layout;
+                        app_view.workspace.update(cx, |ws, cx| {
+                            ws.left_dock.update(cx, |dock, _cx| dock.set_width(layout.left_dock_width));
+                            ws.right_dock.update(cx, |dock, _cx| dock.set_width(layout.right_dock_width));
+                            cx.notify();
+                        });
+
                         for path in &saved.projects {
                             app_view.add_project_with_cmd(path.clone(), Some("ccc"), cx);
                         }
@@ -945,6 +1053,20 @@ fn main() {
                             app_view.project_panel.update(cx, |panel, cx| {
                                 panel.active_project = Some(saved.active);
                                 cx.notify();
+                            });
+                        }
+
+                        // Restore pane sidebar width on all project panes
+                        let sidebar_w = layout.pane_sidebar_width;
+                        let log_h = layout.log_height;
+                        let log_exp = layout.log_expanded;
+                        for state in &app_view.project_states {
+                            state.pane.update(cx, |pane, _cx| {
+                                pane.set_sidebar_width(sidebar_w);
+                            });
+                            state.right_panel.update(cx, |rp, _cx| {
+                                rp.log_height = log_h;
+                                rp.log_expanded = log_exp;
                             });
                         }
                     }

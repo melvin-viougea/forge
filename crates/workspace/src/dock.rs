@@ -34,7 +34,11 @@ impl Dock {
     }
 
     pub fn set_width(&mut self, width: f32) {
-        self.width = width.clamp(150., 600.);
+        let min = match self.position {
+            DockPosition::Left => 150.,
+            DockPosition::Right => 250.,
+        };
+        self.width = width.clamp(min, 600.);
     }
 }
 

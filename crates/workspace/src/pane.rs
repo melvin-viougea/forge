@@ -16,6 +16,7 @@ pub struct Tab {
 /// Events emitted by Pane
 pub enum PaneEvent {
     NewTabRequested,
+    LayoutChanged,
 }
 
 /// A pane containing multiple tabs (center area)
@@ -98,6 +99,10 @@ impl Pane {
         self.sidebar_width
     }
 
+    pub fn set_sidebar_width(&mut self, width: f32) {
+        self.sidebar_width = width.clamp(150., 400.);
+    }
+
     /// CMUX-style floating card sidebar
     fn render_sidebar(&self, cx: &mut Context<Self>) -> Div {
         let active_tab = self.active_tab;
@@ -125,7 +130,7 @@ impl Pane {
                     .mb(px(6.))
                     .rounded(px(6.))
                     .cursor_pointer()
-                    .text_xs()
+                    .text_sm()
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme::subtext())
                     .bg(theme::surface0())
@@ -179,7 +184,7 @@ impl Pane {
                                             .flex_1()
                                             .min_w(px(0.))
                                             .truncate()
-                                            .text_xs()
+                                            .text_sm()
                                             .font_weight(FontWeight::BOLD)
                                             .text_color(if is_active { theme::text() } else { theme::subtext() })
                                             .child(tab.title.clone()),
@@ -195,7 +200,7 @@ impl Pane {
                                                 .w(px(16.))
                                                 .h(px(16.))
                                                 .rounded(px(3.))
-                                                .text_xs()
+                                                .text_sm()
                                                 .text_color(theme::overlay())
                                                 .cursor_pointer()
                                                 .hover(|d| d.text_color(theme::text()).bg(theme::surface0()))
@@ -240,8 +245,11 @@ impl Render for Pane {
                     cx.notify();
                 }
             }))
-            .on_mouse_up(MouseButton::Left, cx.listener(|this, _ev: &MouseUpEvent, _window, _cx| {
-                this.dragging_sidebar = false;
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _ev: &MouseUpEvent, _window, cx| {
+                if this.dragging_sidebar {
+                    this.dragging_sidebar = false;
+                    cx.emit(PaneEvent::LayoutChanged);
+                }
             }))
             .when(has_tabs, |d: Div| {
                 d.child(self.render_sidebar(cx))
@@ -302,7 +310,7 @@ impl Pane {
             .child(
                 div()
                     .text_color(theme::overlay())
-                    .text_xs()
+                    .text_sm()
                     .child("Multi-Agent IDE"),
             )
     }

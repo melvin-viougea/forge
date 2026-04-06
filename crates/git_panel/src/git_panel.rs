@@ -82,8 +82,8 @@ impl CommitPanel {
 impl Render for CommitPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let run_color = if self.is_running { colors::red() } else { colors::green() };
-        let run_label = if self.is_running { "◼ Stop" } else { "▶ Run" };
-        let push_label = if self.is_pushing { "Pushing..." } else { "↑ Push" };
+        let run_icon = if self.is_running { "◼" } else { "▶" };
+        let push_icon = if self.is_pushing { "⏳" } else { "\u{e726}" };
 
         div()
             .flex()
@@ -107,12 +107,12 @@ impl Render for CommitPanel {
                     .h(px(24.))
                     .rounded(px(4.))
                     .cursor_pointer()
-                    .text_xs()
+                    .text_sm()
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(run_color)
                     .bg(colors::surface0())
                     .hover(|d| d.bg(colors::surface1()))
-                    .child(run_label)
+                    .child(run_icon)
                     .on_click(cx.listener(|this, _ev, _window, cx| {
                         this.toggle_runner(cx);
                         cx.notify();
@@ -129,12 +129,12 @@ impl Render for CommitPanel {
                     .h(px(24.))
                     .rounded(px(4.))
                     .cursor_pointer()
-                    .text_xs()
+                    .text_sm()
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(colors::blue())
                     .bg(colors::surface0())
                     .hover(|d| d.bg(colors::surface1()))
-                    .child(push_label)
+                    .child(div().font_family("MesloLGS NF").child(push_icon))
                     .on_click(cx.listener(|this, _ev, _window, cx| {
                         if this.is_pushing {
                             return;
@@ -278,7 +278,7 @@ impl Render for GitChangesPanel {
             .bg(colors::mantle())
             .id("git-changes-scroll")
             .overflow_y_scroll()
-            .text_xs()
+            .text_sm()
             .font_family("Berkeley Mono, SF Mono, Menlo, monospace")
             .children(all_entries)
             // Context menu
@@ -297,7 +297,7 @@ impl Render for GitChangesPanel {
                                     .border_color(colors::surface1())
                                     .rounded(px(6.))
                                     .py(px(4.))
-                                    .text_xs()
+                                    .text_sm()
                                     .shadow_lg()
                                     .child(
                                         div()
@@ -403,6 +403,7 @@ fn render_change_entry(
                 .flex_1()
                 .min_w(px(0.))
                 .truncate()
+                .text_xs()
                 .text_color(colors::overlay())
                 .child(dir_display),
         )
