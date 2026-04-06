@@ -136,6 +136,72 @@ fn collect_diff_stats(
     .ok();
 }
 
+// ── Git log ─────────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+pub struct GitCommit {
+    pub hash: String,   // short 7-char hash
+    pub message: String, // first line
+    pub author: String,
+    pub time_ago: String, // e.g. "2h ago", "3d ago"
+}
+
+/// Get recent commits from the repo.
+pub fn get_commits(root: &Path, limit: usize) -> Vec<GitCommit> {
+    let repo = match git2::Repository::discover(root) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut revwalk = match repo.revwalk() {
+        Ok(rw) => rw,
+        Err(_) => return Vec::new(),
+    };
+    revwalk.push_head().ok();
+    revwalk.set_sorting(git2::Sort::TIME).ok();
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    let mut commits = Vec::new();
+    for oid in revwalk.take(limit).flatten() {
+        let commit = match repo.find_commit(oid) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let hash = format!("{}", &oid.to_string()[..7]);
+        let message = commit
+            .summary()
+            .unwrap_or("")
+            .to_string();
+        let author = commit
+            .author()
+            .name()
+            .unwrap_or("unknown")
+            .to_string();
+        let epoch = commit.time().seconds();
+        let time_ago = format_time_ago(now - epoch);
+
+        commits.push(GitCommit { hash, message, author, time_ago });
+    }
+    commits
+}
+
+fn format_time_ago(secs: i64) -> String {
+    if secs < 60 { return "now".to_string(); }
+    let mins = secs / 60;
+    if mins < 60 { return format!("{}m", mins); }
+    let hours = mins / 60;
+    if hours < 24 { return format!("{}h", hours); }
+    let days = hours / 24;
+    if days < 30 { return format!("{}d", days); }
+    let months = days / 30;
+    if months < 12 { return format!("{}mo", months); }
+    format!("{}y", days / 365)
+}
+
 /// Get the current branch name
 pub fn get_branch_name(root: &Path) -> String {
     let repo = match git2::Repository::discover(root) {

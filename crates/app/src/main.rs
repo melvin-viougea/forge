@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use ide_file_explorer::FileExplorerPanel;
-use ide_git_panel::{CommitPanel, GitChangesPanel, RunnerEvent};
+use ide_git_panel::{CommitPanel, GitChangesPanel, GitLogPanel, RunnerEvent};
 use ide_terminal::TerminalView;
 use ide_workspace::{IdeWorkspace, Pane, PaneEvent, WorkspaceEvent};
 
@@ -126,27 +126,47 @@ struct RightPanel {
     pub commit_panel: Entity<CommitPanel>,
     file_explorer: Entity<FileExplorerPanel>,
     git_changes: Entity<GitChangesPanel>,
+    git_log: Entity<GitLogPanel>,
     show_files: bool,
+    runner_terminal: Option<Entity<TerminalView>>,
+    runner_expanded: bool,
+    log_expanded: bool,
 }
 
 impl RightPanel {
     fn new(root_path: PathBuf, cx: &mut Context<Self>) -> Self {
         let commit_panel = cx.new(|_cx| CommitPanel::new(root_path.clone()));
         let file_explorer = cx.new(|cx| FileExplorerPanel::new(root_path.clone(), cx));
-        let git_changes = cx.new(|cx| GitChangesPanel::new(root_path, cx));
+        let git_changes = cx.new(|cx| GitChangesPanel::new(root_path.clone(), cx));
+        let git_log = cx.new(|cx| GitLogPanel::new(root_path, cx));
 
         Self {
             commit_panel,
             file_explorer,
             git_changes,
+            git_log,
             show_files: false,
+            runner_terminal: None,
+            runner_expanded: true,
+            log_expanded: false,
         }
+    }
+
+    fn set_runner(&mut self, terminal: Entity<TerminalView>) {
+        self.runner_terminal = Some(terminal);
+        self.runner_expanded = true;
+    }
+
+    fn clear_runner(&mut self) {
+        self.runner_terminal = None;
     }
 }
 
 impl Render for RightPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let change_count = self.git_changes.read(cx).change_count();
+        let has_runner = self.runner_terminal.is_some();
+        let runner_expanded = self.runner_expanded;
 
         div()
             .flex()
@@ -155,6 +175,55 @@ impl Render for RightPanel {
             .bg(colors::mantle())
             .child(self.commit_panel.clone())
             .child(div().w_full().h(px(1.)).flex_shrink_0().bg(colors::surface1()))
+            // ── Runner section (collapsible) ──────────────────
+            .when(has_runner, |d: Div| {
+                d.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .w_full()
+                        .when(runner_expanded, |d: Div| d.flex_1().min_h(px(80.)))
+                        .child(
+                            // Header bar
+                            div()
+                                .id("runner-header")
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .w_full()
+                                .h(px(28.))
+                                .min_h(px(28.))
+                                .flex_shrink_0()
+                                .px(px(8.))
+                                .bg(colors::mantle())
+                                .border_b_1()
+                                .border_color(colors::surface1())
+                                .cursor_pointer()
+                                .hover(|d| d.bg(colors::surface0()))
+                                .text_xs()
+                                .text_color(colors::subtext())
+                                .child(if runner_expanded { "▼ " } else { "▶ " })
+                                .child("Runner")
+                                .on_click(cx.listener(|this, _ev, _window, cx| {
+                                    this.runner_expanded = !this.runner_expanded;
+                                    cx.notify();
+                                })),
+                        )
+                        .when_some(
+                            if runner_expanded { self.runner_terminal.clone() } else { None },
+                            |d: Div, terminal| {
+                                d.child(
+                                    div()
+                                        .flex_1()
+                                        .w_full()
+                                        .overflow_hidden()
+                                        .child(terminal),
+                                )
+                            },
+                        ),
+                )
+                .child(div().w_full().h(px(1.)).flex_shrink_0().bg(colors::surface1()))
+            })
             .child(
                 div()
                     .flex()
@@ -218,6 +287,47 @@ impl Render for RightPanel {
                     .when(!self.show_files, |d: Div| d.child(self.git_changes.clone()))
                     .when(self.show_files, |d: Div| d.child(self.file_explorer.clone())),
             )
+            // ── Git Log section (collapsible, bottom) ────────────
+            .child(div().w_full().h(px(1.)).flex_shrink_0().bg(colors::surface1()))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .w_full()
+                    .when(self.log_expanded, |d: Div| d.flex_1().min_h(px(80.)))
+                    .child(
+                        div()
+                            .id("log-header")
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .w_full()
+                            .h(px(28.))
+                            .min_h(px(28.))
+                            .flex_shrink_0()
+                            .px(px(8.))
+                            .bg(colors::mantle())
+                            .cursor_pointer()
+                            .hover(|d| d.bg(colors::surface0()))
+                            .text_xs()
+                            .text_color(colors::subtext())
+                            .child(if self.log_expanded { "▼ " } else { "▲ " })
+                            .child("Git Log")
+                            .on_click(cx.listener(|this, _ev, _window, cx| {
+                                this.log_expanded = !this.log_expanded;
+                                cx.notify();
+                            })),
+                    )
+                    .when(self.log_expanded, |d: Div| {
+                        d.child(
+                            div()
+                                .flex_1()
+                                .w_full()
+                                .overflow_hidden()
+                                .child(self.git_log.clone()),
+                        )
+                    }),
+            )
     }
 }
 
@@ -228,7 +338,6 @@ struct ProjectState {
     pane: Entity<Pane>,
     right_panel: Entity<RightPanel>,
     runner_terminal: Option<Entity<TerminalView>>,
-    runner_tab_id: Option<usize>,
     _pane_sub: Subscription,
     _runner_sub: Subscription,
 }
@@ -294,20 +403,22 @@ impl AppView {
             match event {
                 RunnerEvent::Start(cmd) => {
                     let state = &mut this.project_states[project_idx];
-                    // Close existing runner tab if any
-                    if let Some(tab_id) = state.runner_tab_id.take() {
-                        state.pane.update(cx, |pane, _cx| pane.close_tab(tab_id));
-                        state.runner_terminal = None;
-                    }
-                    // Create runner terminal tab
-                    this.terminal_count += 1;
+                    // Clear existing runner
+                    state.right_panel.update(cx, |panel, _cx| panel.clear_runner());
+                    state.runner_terminal = None;
+
+                    // Create runner terminal in right panel
                     let project_path = state.path.clone();
-                    let tv = cx.new(|cx| TerminalView::new_in("Runner".to_string(), Some(project_path), cx));
-                    let tab_id = state.pane.update(cx, |pane, _cx| {
-                        pane.add_tab("Runner".to_string(), "> ", AnyView::from(tv.clone()), true)
+                    let tv = cx.new(|cx| {
+                        let mut view = TerminalView::new_in("Runner".to_string(), Some(project_path), cx);
+                        view.compact = true;
+                        view
                     });
-                    state.runner_tab_id = Some(tab_id);
                     state.runner_terminal = Some(tv.clone());
+                    state.right_panel.update(cx, |panel, cx| {
+                        panel.set_runner(tv.clone());
+                        cx.notify();
+                    });
                     cx.notify();
 
                     // Write command after shell initializes
@@ -337,7 +448,6 @@ impl AppView {
             pane,
             right_panel,
             runner_terminal: None,
-            runner_tab_id: None,
             _pane_sub: pane_sub,
             _runner_sub: runner_sub,
         };

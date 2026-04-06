@@ -9,7 +9,7 @@ use alacritty_terminal::event::{EventListener, VoidListener};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::cell::Cell as AlaCell;
 use alacritty_terminal::term::cell::Flags as CellFlags;
-use alacritty_terminal::term::Config;
+use alacritty_terminal::term::{Config, TermMode};
 use alacritty_terminal::Term;
 use alacritty_terminal::vte::ansi;
 
@@ -336,6 +336,26 @@ impl Terminal {
             screen_lines: rows as usize,
         };
         self.term.lock().unwrap().resize(dims);
+    }
+
+    /// Whether the terminal application has enabled bracketed paste mode.
+    pub fn bracketed_paste_enabled(&self) -> bool {
+        self.term
+            .lock()
+            .unwrap()
+            .mode()
+            .contains(TermMode::BRACKETED_PASTE)
+    }
+
+    /// Write data to the PTY, wrapping in bracket paste sequences if the mode is active.
+    pub fn paste(&mut self, data: &[u8]) {
+        if self.bracketed_paste_enabled() {
+            self.write_input(b"\x1b[200~");
+            self.write_input(data);
+            self.write_input(b"\x1b[201~");
+        } else {
+            self.write_input(data);
+        }
     }
 
     pub fn check_and_clear_new_data(&self) -> bool {

@@ -2,7 +2,7 @@ use gpui::*;
 use gpui::prelude::*;
 use std::path::PathBuf;
 
-use crate::status::{get_changes, ChangeStatus, GitFileChange};
+use crate::status::{get_changes, get_commits, ChangeStatus, GitCommit, GitFileChange};
 
 mod colors {
     use gpui::rgb;
@@ -35,7 +35,6 @@ pub struct CommitPanel {
     root_path: PathBuf,
     is_pushing: bool,
     pub is_running: bool,
-    status_text: String,
 }
 
 impl CommitPanel {
@@ -44,19 +43,16 @@ impl CommitPanel {
             root_path,
             is_pushing: false,
             is_running: false,
-            status_text: String::new(),
         }
     }
 
     fn toggle_runner(&mut self, cx: &mut Context<Self>) {
         if self.is_running {
             self.is_running = false;
-            self.status_text = "Stopped".to_string();
             cx.emit(RunnerEvent::Stop);
         } else {
             let cmd = self.detect_run_command();
             self.is_running = true;
-            self.status_text = format!("Running: {}", cmd);
             cx.emit(RunnerEvent::Start(cmd));
         }
     }
@@ -144,7 +140,6 @@ impl Render for CommitPanel {
                                     return;
                                 }
                                 this.is_pushing = true;
-                                this.status_text = "Staging...".to_string();
                                 cx.notify();
 
                                 let root = this.root_path.clone();
@@ -154,10 +149,7 @@ impl Render for CommitPanel {
                                     }).await;
 
                                     this.update(cx, |view, cx| {
-                                        match result {
-                                            Ok(msg) => view.status_text = msg,
-                                            Err(e) => view.status_text = format!("Error: {}", e),
-                                        }
+                                        let _ = result;
                                         view.is_pushing = false;
                                         cx.notify();
                                     }).ok();
@@ -165,16 +157,6 @@ impl Render for CommitPanel {
                             })),
                     ),
             )
-            // Status text
-            .when(!self.status_text.is_empty(), |d: Div| {
-                d.child(
-                    div()
-                        .text_xs()
-                        .text_color(colors::subtext())
-                        .w_full()
-                        .child(self.status_text.clone()),
-                )
-            })
     }
 }
 
@@ -458,4 +440,98 @@ fn render_change_entry(
             });
             cx.notify();
         }))
+}
+
+// ── Git Log Panel ───────────────────────────────────────────
+
+pub struct GitLogPanel {
+    root_path: PathBuf,
+    commits: Vec<GitCommit>,
+    _poll_task: Task<()>,
+}
+
+impl GitLogPanel {
+    pub fn new(root_path: PathBuf, cx: &mut Context<Self>) -> Self {
+        let commits = get_commits(&root_path, 50);
+
+        let poll_task = cx.spawn(async |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            loop {
+                cx.background_executor().timer(std::time::Duration::from_secs(5)).await;
+                let result = this.update(cx, |view, cx| {
+                    let new_commits = get_commits(&view.root_path, 50);
+                    // Only update if the top commit changed
+                    let changed = match (view.commits.first(), new_commits.first()) {
+                        (Some(a), Some(b)) => a.hash != b.hash,
+                        (None, Some(_)) | (Some(_), None) => true,
+                        (None, None) => false,
+                    };
+                    if changed {
+                        view.commits = new_commits;
+                        cx.notify();
+                    }
+                });
+                if result.is_err() {
+                    break;
+                }
+            }
+        });
+
+        Self { root_path, commits, _poll_task: poll_task }
+    }
+}
+
+impl Render for GitLogPanel {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .bg(colors::mantle())
+            .id("git-log-scroll")
+            .overflow_y_scroll()
+            .text_xs()
+            .font_family("Berkeley Mono, SF Mono, Menlo, monospace")
+            .children(
+                self.commits.iter().enumerate().map(|(idx, commit)| {
+                    render_commit_entry(idx, commit)
+                }),
+            )
+    }
+}
+
+fn render_commit_entry(idx: usize, commit: &GitCommit) -> Stateful<Div> {
+    div()
+        .id(ElementId::Name(format!("commit-{}", idx).into()))
+        .flex()
+        .flex_row()
+        .items_center()
+        .w_full()
+        .h(px(28.))
+        .px(px(8.))
+        .hover(|d| d.bg(colors::surface0()))
+        // Hash
+        .child(
+            div()
+                .flex_shrink_0()
+                .w(px(52.))
+                .text_color(colors::blue())
+                .child(commit.hash.clone()),
+        )
+        // Message (truncated)
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .truncate()
+                .text_color(colors::text())
+                .child(commit.message.clone()),
+        )
+        // Time ago
+        .child(
+            div()
+                .flex_shrink_0()
+                .ml(px(4.))
+                .text_color(colors::overlay())
+                .child(commit.time_ago.clone()),
+        )
 }
