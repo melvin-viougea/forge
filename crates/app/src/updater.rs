@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-pub const CURRENT_VERSION: &str = "0.9.3";
+pub const CURRENT_VERSION: &str = "0.9.4";
 const GITHUB_REPO: &str = "melvin-viougea/forge";
 
 #[derive(Clone, Debug)]

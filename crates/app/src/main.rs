@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use ide_file_explorer::FileExplorerPanel;
-use ide_git_panel::{CommitPanel, GitChangesPanel};
+use ide_git_panel::{CommitPanel, GitChangesPanel, RunnerEvent};
 use ide_terminal::TerminalView;
 use ide_workspace::{IdeWorkspace, Pane, PaneEvent, WorkspaceEvent};
 
@@ -123,7 +123,7 @@ impl Render for ProjectPanel {
 // ── Right Panel (git + files per project) ────────────────────
 
 struct RightPanel {
-    commit_panel: Entity<CommitPanel>,
+    pub commit_panel: Entity<CommitPanel>,
     file_explorer: Entity<FileExplorerPanel>,
     git_changes: Entity<GitChangesPanel>,
     show_files: bool,
@@ -227,7 +227,10 @@ struct ProjectState {
     path: PathBuf,
     pane: Entity<Pane>,
     right_panel: Entity<RightPanel>,
+    runner_terminal: Option<Entity<TerminalView>>,
+    runner_tab_id: Option<usize>,
     _pane_sub: Subscription,
+    _runner_sub: Subscription,
 }
 
 // ── AppView ──────────────────────────────────────────────────
@@ -284,11 +287,59 @@ impl AppView {
             p.add_tab(name.clone(), "> ", AnyView::from(terminal_view), true);
         });
 
+        // Subscribe to runner events from this project's commit panel
+        let project_idx = self.project_states.len();
+        let commit_panel_entity = right_panel.read(cx).commit_panel.clone();
+        let runner_sub = cx.subscribe(&commit_panel_entity, move |this: &mut AppView, _panel, event: &RunnerEvent, cx| {
+            match event {
+                RunnerEvent::Start(cmd) => {
+                    let state = &mut this.project_states[project_idx];
+                    // Close existing runner tab if any
+                    if let Some(tab_id) = state.runner_tab_id.take() {
+                        state.pane.update(cx, |pane, _cx| pane.close_tab(tab_id));
+                        state.runner_terminal = None;
+                    }
+                    // Create runner terminal tab
+                    this.terminal_count += 1;
+                    let project_path = state.path.clone();
+                    let tv = cx.new(|cx| TerminalView::new_in("Runner".to_string(), Some(project_path), cx));
+                    let tab_id = state.pane.update(cx, |pane, _cx| {
+                        pane.add_tab("Runner".to_string(), "> ", AnyView::from(tv.clone()), true)
+                    });
+                    state.runner_tab_id = Some(tab_id);
+                    state.runner_terminal = Some(tv.clone());
+                    cx.notify();
+
+                    // Write command after shell initializes
+                    let cmd = cmd.clone();
+                    cx.spawn(async move |_this: WeakEntity<AppView>, cx: &mut AsyncApp| {
+                        cx.background_executor().timer(Duration::from_millis(300)).await;
+                        tv.update(cx, |view, _cx| {
+                            view.terminal.write_input(cmd.as_bytes());
+                            view.terminal.write_input(b"\r");
+                        }).ok();
+                    }).detach();
+                }
+                RunnerEvent::Stop => {
+                    let state = &this.project_states[project_idx];
+                    // Send Ctrl+C to stop the running process
+                    if let Some(ref terminal) = state.runner_terminal {
+                        terminal.update(cx, |view, _cx| {
+                            view.terminal.write_input(&[3]); // Ctrl+C
+                        });
+                    }
+                }
+            }
+        });
+
         let state = ProjectState {
             path,
             pane,
             right_panel,
+            runner_terminal: None,
+            runner_tab_id: None,
             _pane_sub: pane_sub,
+            _runner_sub: runner_sub,
         };
 
         self.project_states.push(state);

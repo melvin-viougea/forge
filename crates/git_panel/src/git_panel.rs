@@ -22,12 +22,19 @@ mod colors {
     pub fn lavender() -> Rgba { rgb(0xb4befe) }
 }
 
+/// Events emitted by the runner button
+pub enum RunnerEvent {
+    Start(String),
+    Stop,
+}
+
+impl gpui::EventEmitter<RunnerEvent> for CommitPanel {}
+
 /// Action bar: Run/Stop + Push
 pub struct CommitPanel {
     root_path: PathBuf,
     is_pushing: bool,
-    is_running: bool,
-    runner_process: Option<std::process::Child>,
+    pub is_running: bool,
     status_text: String,
 }
 
@@ -37,36 +44,20 @@ impl CommitPanel {
             root_path,
             is_pushing: false,
             is_running: false,
-            runner_process: None,
             status_text: String::new(),
         }
     }
 
-    fn toggle_runner(&mut self) {
+    fn toggle_runner(&mut self, cx: &mut Context<Self>) {
         if self.is_running {
-            // Stop
-            if let Some(mut child) = self.runner_process.take() {
-                let _ = child.kill();
-            }
             self.is_running = false;
             self.status_text = "Stopped".to_string();
+            cx.emit(RunnerEvent::Stop);
         } else {
-            // Start — detect project type and run
             let cmd = self.detect_run_command();
-            match std::process::Command::new("sh")
-                .args(["-c", &cmd])
-                .current_dir(&self.root_path)
-                .spawn()
-            {
-                Ok(child) => {
-                    self.runner_process = Some(child);
-                    self.is_running = true;
-                    self.status_text = format!("Running: {}", cmd);
-                }
-                Err(e) => {
-                    self.status_text = format!("Error: {}", e);
-                }
-            }
+            self.is_running = true;
+            self.status_text = format!("Running: {}", cmd);
+            cx.emit(RunnerEvent::Start(cmd));
         }
     }
 
@@ -88,14 +79,6 @@ impl CommitPanel {
             "go run .".to_string()
         } else {
             "echo 'No run command detected'".to_string()
-        }
-    }
-}
-
-impl Drop for CommitPanel {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.runner_process.take() {
-            let _ = child.kill();
         }
     }
 }
@@ -135,7 +118,7 @@ impl Render for CommitPanel {
                             .hover(|d| d.bg(colors::surface1()))
                             .child(if self.is_running { "■ Stop" } else { "▶ Run" })
                             .on_click(cx.listener(|this, _ev, _window, cx| {
-                                this.toggle_runner();
+                                this.toggle_runner(cx);
                                 cx.notify();
                             })),
                     )
