@@ -149,15 +149,16 @@ fn extract_json_string(json: &str, key: &str) -> Option<String> {
 }
 
 fn extract_dmg_url(json: &str) -> Option<String> {
+    let key = "\"browser_download_url\"";
     let mut search_from = 0;
-    while let Some(pos) = json[search_from..].find("browser_download_url") {
+    while let Some(pos) = json[search_from..].find(key) {
         let abs_pos = search_from + pos;
         if let Some(url) = extract_json_string(&json[abs_pos..], "browser_download_url") {
             if url.ends_with(".dmg") {
                 return Some(url);
             }
         }
-        search_from = abs_pos + 20;
+        search_from = abs_pos + key.len();
     }
     None
 }
