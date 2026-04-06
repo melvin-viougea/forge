@@ -89,11 +89,22 @@ impl TerminalView {
                     if view.terminal.check_and_clear_new_data() {
                         // Check for OSC title changes from the terminal
                         if let Some(osc_title) = view.terminal.take_osc_title() {
+                            // Strip user@host: prefix if present
+                            let stripped = if let Some(colon_pos) = osc_title.find(':') {
+                                let before = &osc_title[..colon_pos];
+                                if before.contains('@') {
+                                    osc_title[colon_pos + 1..].to_string()
+                                } else {
+                                    osc_title.clone()
+                                }
+                            } else {
+                                osc_title.clone()
+                            };
                             // Extract first word as process name
-                            let process_name = osc_title
+                            let process_name = stripped
                                 .split_whitespace()
                                 .next()
-                                .unwrap_or(&osc_title)
+                                .unwrap_or(&stripped)
                                 .to_string();
                             // Ignore shell prompt noise (symbols, single chars, paths)
                             let looks_like_process = process_name.len() >= 2

@@ -196,6 +196,7 @@ impl Terminal {
         cmd.cwd(working_dir.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into())));
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+        cmd.env("PROMPT", "%~ %# ");
 
         pair.slave.spawn_command(cmd)?;
 

@@ -14,6 +14,7 @@ pub struct IdeWorkspace {
 
 pub enum WorkspaceEvent {
     UpdateClicked,
+    SettingsClicked,
 }
 
 impl EventEmitter<WorkspaceEvent> for IdeWorkspace {}
@@ -63,7 +64,7 @@ impl Render for IdeWorkspace {
                                     .text_xs()
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(theme::blue())
-                                    .child("FORGE v0.9.7"),
+                                    .child("FORGE v0.9.8"),
                             ),
                     )
                     .child(div().flex_1())
@@ -89,7 +90,25 @@ impl Render for IdeWorkspace {
                                     cx.emit(WorkspaceEvent::UpdateClicked);
                                 })),
                         )
-                    }),
+                    })
+                    // Settings gear button
+                    .child(
+                        div()
+                            .id("settings-btn")
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .w(px(28.))
+                            .h(px(28.))
+                            .cursor_pointer()
+                            .text_sm()
+                            .text_color(theme::overlay())
+                            .hover(|d| d.text_color(theme::text()))
+                            .child("⚙")
+                            .on_click(cx.listener(|_this, _ev, _window, cx| {
+                                cx.emit(WorkspaceEvent::SettingsClicked);
+                            })),
+                    ),
             )
             .child(
                 div()

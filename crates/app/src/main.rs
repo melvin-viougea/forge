@@ -1,4 +1,5 @@
 mod updater;
+mod session;
 
 use gpui::*;
 use gpui::prelude::*;
@@ -383,7 +384,19 @@ struct AppView {
 }
 
 impl AppView {
+    fn save_session(&self) {
+        let paths: Vec<PathBuf> = self.project_states.iter().map(|s| s.path.clone()).collect();
+        let active = self.active_project.unwrap_or(0);
+        session::save(&paths, active);
+    }
+}
+
+impl AppView {
     fn add_project(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.add_project_with_cmd(path, Some("ccc"), cx);
+    }
+
+    fn add_project_with_cmd(&mut self, path: PathBuf, auto_cmd: Option<&str>, cx: &mut Context<Self>) {
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -448,6 +461,19 @@ impl AppView {
                 }
             }
         }).detach();
+
+        // Auto-run command in the first terminal (e.g. "ccc" for session restore)
+        if let Some(cmd) = auto_cmd {
+            let cmd = cmd.to_string();
+            let tv = terminal_view.clone();
+            cx.spawn(async move |_this: WeakEntity<AppView>, cx: &mut AsyncApp| {
+                cx.background_executor().timer(Duration::from_millis(500)).await;
+                tv.update(cx, |view, _cx| {
+                    view.terminal.write_input(cmd.as_bytes());
+                    view.terminal.write_input(b"\r");
+                }).ok();
+            }).detach();
+        }
 
         // Subscribe to runner events from this project's commit panel
         let project_idx = self.project_states.len();
@@ -519,6 +545,7 @@ impl AppView {
 
         // Switch to this project
         self.switch_project(idx, cx);
+        self.save_session();
     }
 
     fn switch_project(&mut self, idx: usize, cx: &mut Context<Self>) {
@@ -646,6 +673,9 @@ fn main() {
                                     }).detach();
                                 }
                             }
+                            WorkspaceEvent::SettingsClicked => {
+                                // TODO: open settings panel
+                            }
                         }
                     });
 
@@ -671,7 +701,7 @@ fn main() {
                         }
                     });
 
-                    AppView {
+                    let mut app_view = AppView {
                         workspace,
                         project_panel,
                         project_states: Vec::new(),
@@ -681,7 +711,23 @@ fn main() {
                         _project_subscription: project_sub,
                         _workspace_subscription: workspace_sub,
                         _update_task: update_task,
+                    };
+
+                    // Restore previous session
+                    if let Some(saved) = session::load() {
+                        for path in &saved.projects {
+                            app_view.add_project_with_cmd(path.clone(), Some("ccc"), cx);
+                        }
+                        if saved.active < app_view.project_states.len() {
+                            app_view.switch_project(saved.active, cx);
+                            app_view.project_panel.update(cx, |panel, cx| {
+                                panel.active_project = Some(saved.active);
+                                cx.notify();
+                            });
+                        }
                     }
+
+                    app_view
                 })
             },
         )
