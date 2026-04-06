@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use ide_file_explorer::FileExplorerPanel;
 use ide_git_panel::{CommitPanel, GitChangesPanel, GitLogPanel, RunnerEvent};
-use ide_terminal::TerminalView;
+use ide_terminal::{TerminalView, TerminalViewEvent};
 use ide_workspace::{IdeWorkspace, Pane, PaneEvent, WorkspaceEvent};
 
 // ── Project Panel (left sidebar) ─────────────────────────────
@@ -27,19 +27,31 @@ enum ProjectPanelEvent {
 struct ProjectEntry {
     name: String,
     path: PathBuf,
+    display_path: String,
+}
+
+/// Shorten a path for display: replace $HOME with ~
+fn shorten_path(path: &PathBuf) -> String {
+    let s = path.display().to_string();
+    if let Ok(home) = std::env::var("HOME") {
+        if s.starts_with(&home) {
+            return format!("~{}", &s[home.len()..]);
+        }
+    }
+    s
 }
 
 mod colors {
     use gpui::rgb;
     use gpui::Rgba;
 
-    pub fn mantle() -> Rgba { rgb(0x181825) }
-    pub fn surface0() -> Rgba { rgb(0x313244) }
-    pub fn surface1() -> Rgba { rgb(0x45475a) }
-    pub fn text() -> Rgba { rgb(0xcdd6f4) }
-    pub fn subtext() -> Rgba { rgb(0xa6adc8) }
-    pub fn blue() -> Rgba { rgb(0x89b4fa) }
-    pub fn overlay() -> Rgba { rgb(0x6c7086) }
+    pub fn mantle() -> Rgba { rgb(0x0d1117) }
+    pub fn surface0() -> Rgba { rgb(0x161b22) }
+    pub fn surface1() -> Rgba { rgb(0x21262d) }
+    pub fn text() -> Rgba { rgb(0xc9d1d9) }
+    pub fn subtext() -> Rgba { rgb(0x8b949e) }
+    pub fn blue() -> Rgba { rgb(0x58a6ff) }
+    pub fn overlay() -> Rgba { rgb(0x484f58) }
 }
 
 impl ProjectPanel {
@@ -61,10 +73,11 @@ impl Render for ProjectPanel {
             .size_full()
             .bg(colors::mantle())
             .text_xs()
-            // Add project button (top)
+            // New Workspace button
             .child(
                 div()
-                    .p(px(8.))
+                    .p(px(6.))
+                    .flex_shrink_0()
                     .child(
                         div()
                             .id("add-project")
@@ -72,51 +85,64 @@ impl Render for ProjectPanel {
                             .items_center()
                             .justify_center()
                             .w_full()
-                            .h(px(28.))
-                            .bg(colors::surface0())
-                            .rounded(px(4.))
+                            .h(px(32.))
+                            .rounded(px(6.))
                             .cursor_pointer()
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
                             .text_color(colors::subtext())
+                            .bg(colors::surface0())
                             .hover(|d| d.bg(colors::surface1()).text_color(colors::text()))
-                            .child("+ Add Project")
+                            .child("+ New Workspace")
                             .on_click(cx.listener(|_this, _ev, _window, cx| {
                                 cx.emit(ProjectPanelEvent::AddProjectRequested);
                             })),
                     ),
             )
-            // Project list (below button)
-            .children(self.projects.iter().enumerate().map(|(idx, project)| {
-                let is_active = active == Some(idx);
-                let path = project.path.clone();
+            // CMUX-style floating cards
+            .child(
                 div()
-                    .id(ElementId::Name(format!("project-{}", idx).into()))
+                    .flex_1()
                     .flex()
-                    .flex_row()
-                    .items_center()
-                    .w_full()
-                    .h(px(28.))
-                    .px(px(12.))
-                    .gap(px(6.))
-                    .cursor_pointer()
-                    .when(is_active, |d: Stateful<Div>| d.bg(colors::surface0()).border_l_2().border_color(colors::blue()))
-                    .hover(|d| d.bg(colors::surface0()))
-                    .child(
+                    .flex_col()
+                    .p(px(6.))
+                    .gap(px(2.))
+                    .children(self.projects.iter().enumerate().map(|(idx, project)| {
+                        let is_active = active == Some(idx);
+                        let path = project.path.clone();
                         div()
-                            .text_color(if is_active { colors::blue() } else { colors::overlay() })
-                            .child("> "),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_color(if is_active { colors::text() } else { colors::subtext() })
-                            .child(project.name.clone()),
-                    )
-                    .on_click(cx.listener(move |this, _ev, _window, cx| {
-                        this.active_project = Some(idx);
-                        cx.emit(ProjectPanelEvent::ProjectSelected(idx, path.clone()));
-                        cx.notify();
-                    }))
-            }))
+                            .id(ElementId::Name(format!("project-{}", idx).into()))
+                            .flex()
+                            .flex_col()
+                            .w_full()
+                            .flex()
+                            .flex_col()
+                            .w_full()
+                            .px(px(10.))
+                            .py(px(12.))
+                            .rounded(px(6.))
+                            .cursor_pointer()
+                            .when(is_active, |d: Stateful<Div>| {
+                                d.bg(colors::blue())
+                            })
+                            .when(!is_active, |d: Stateful<Div>| {
+                                d.hover(|d| d.bg(colors::surface0()))
+                            })
+                            // Project name
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(if is_active { gpui::rgb(0xffffff) } else { colors::text() })
+                                    .child(project.name.clone()),
+                            )
+                            .on_click(cx.listener(move |this, _ev, _window, cx| {
+                                this.active_project = Some(idx);
+                                cx.emit(ProjectPanelEvent::ProjectSelected(idx, path.clone()));
+                                cx.notify();
+                            }))
+                    })),
+            )
     }
 }
 
@@ -375,13 +401,26 @@ impl AppView {
             match event {
                 PaneEvent::NewTabRequested => {
                     this.terminal_count += 1;
-                    let title = format!("Terminal {}", this.terminal_count);
+                    let title = format!("zsh {}", this.terminal_count);
                     if let Some(idx) = this.active_project {
                         let project_path = this.project_states[idx].path.clone();
+                        let detail = shorten_path(&project_path);
                         let terminal_view = cx.new(|cx| TerminalView::new_in(title.clone(), Some(project_path), cx));
-                        this.project_states[idx].pane.update(cx, |pane, _cx| {
-                            pane.add_tab(title, "> ", AnyView::from(terminal_view), true);
+                        let tab_id = this.project_states[idx].pane.update(cx, |pane, _cx| {
+                            pane.add_tab(title, "> ", detail, AnyView::from(terminal_view.clone()), true)
                         });
+                        // Subscribe to OSC title changes
+                        let pane_entity = this.project_states[idx].pane.clone();
+                        cx.subscribe(&terminal_view, move |_this: &mut AppView, _tv, event: &TerminalViewEvent, cx| {
+                            match event {
+                                TerminalViewEvent::TitleChanged(new_title) => {
+                                    pane_entity.update(cx, |pane, cx| {
+                                        pane.set_tab_title(tab_id, new_title.clone());
+                                        cx.notify();
+                                    });
+                                }
+                            }
+                        }).detach();
                     }
                     cx.notify();
                 }
@@ -391,10 +430,24 @@ impl AppView {
         // Open a terminal in this project directory
         self.terminal_count += 1;
         let project_path = path.clone();
-        let terminal_view = cx.new(|cx| TerminalView::new_in(name.clone(), Some(project_path), cx));
-        pane.update(cx, |p, _cx| {
-            p.add_tab(name.clone(), "> ", AnyView::from(terminal_view), true);
+        let detail = shorten_path(&project_path);
+        let term_title = format!("zsh {}", self.terminal_count);
+        let terminal_view = cx.new(|cx| TerminalView::new_in(term_title.clone(), Some(project_path), cx));
+        let tab_id = pane.update(cx, |p, _cx| {
+            p.add_tab(term_title, "> ", detail, AnyView::from(terminal_view.clone()), true)
         });
+        // Subscribe to OSC title changes
+        let pane_for_title = pane.clone();
+        cx.subscribe(&terminal_view, move |_this: &mut AppView, _tv, event: &TerminalViewEvent, cx| {
+            match event {
+                TerminalViewEvent::TitleChanged(new_title) => {
+                    pane_for_title.update(cx, |pane, cx| {
+                        pane.set_tab_title(tab_id, new_title.clone());
+                        cx.notify();
+                    });
+                }
+            }
+        }).detach();
 
         // Subscribe to runner events from this project's commit panel
         let project_idx = self.project_states.len();
@@ -457,8 +510,9 @@ impl AppView {
 
         // Add to project panel
         let panel_path = self.project_states[idx].path.clone();
+        let display_path = shorten_path(&panel_path);
         self.project_panel.update(cx, |panel, cx| {
-            panel.projects.push(ProjectEntry { name, path: panel_path });
+            panel.projects.push(ProjectEntry { name, path: panel_path, display_path });
             panel.active_project = Some(idx);
             cx.notify();
         });

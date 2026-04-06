@@ -6,45 +6,45 @@ pub use dock::*;
 pub use pane::*;
 pub use workspace::*;
 
-// Catppuccin Mocha color palette
+// Forge Dark theme — inspired by CMUX / Polyscope
 pub mod theme {
     use gpui::rgb;
     use gpui::Rgba;
 
     pub fn base() -> Rgba {
-        rgb(0x1e1e2e)
+        rgb(0x0a0e14)
     }
     pub fn mantle() -> Rgba {
-        rgb(0x181825)
+        rgb(0x0d1117)
     }
     pub fn surface0() -> Rgba {
-        rgb(0x313244)
+        rgb(0x161b22)
     }
     pub fn surface1() -> Rgba {
-        rgb(0x45475a)
+        rgb(0x21262d)
     }
     pub fn text() -> Rgba {
-        rgb(0xcdd6f4)
+        rgb(0xc9d1d9)
     }
     pub fn subtext() -> Rgba {
-        rgb(0xa6adc8)
+        rgb(0x8b949e)
     }
     pub fn blue() -> Rgba {
-        rgb(0x89b4fa)
+        rgb(0x58a6ff)
     }
     pub fn green() -> Rgba {
-        rgb(0xa6e3a1)
+        rgb(0x3fb950)
     }
     pub fn red() -> Rgba {
-        rgb(0xf38ba8)
+        rgb(0xf85149)
     }
     pub fn yellow() -> Rgba {
-        rgb(0xf9e2af)
+        rgb(0xd29922)
     }
     pub fn lavender() -> Rgba {
-        rgb(0xb4befe)
+        rgb(0x79c0ff)
     }
     pub fn overlay() -> Rgba {
-        rgb(0x6c7086)
+        rgb(0x484f58)
     }
 }

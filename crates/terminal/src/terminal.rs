@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use alacritty_terminal::event::{EventListener, VoidListener};
+use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::cell::Cell as AlaCell;
 use alacritty_terminal::term::cell::Flags as CellFlags;
@@ -13,12 +13,27 @@ use alacritty_terminal::term::{Config, TermMode};
 use alacritty_terminal::Term;
 use alacritty_terminal::vte::ansi;
 
+/// Captures OSC title change events from the terminal.
+#[derive(Clone)]
+struct TitleListener {
+    title: Arc<Mutex<Option<String>>>,
+}
+
+impl EventListener for TitleListener {
+    fn send_event(&self, event: Event) {
+        if let Event::Title(title) = event {
+            *self.title.lock().unwrap() = Some(title);
+        }
+    }
+}
+
 pub struct Terminal {
-    term: Arc<Mutex<Term<VoidListener>>>,
+    term: Arc<Mutex<Term<TitleListener>>>,
     writer: Option<Box<dyn Write + Send>>,
     master_pty: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
     _reader_handle: Option<std::thread::JoinHandle<()>>,
     pub has_new_data: Arc<AtomicBool>,
+    osc_title: Arc<Mutex<Option<String>>>,
     pub title: String,
     pub cols: u16,
     pub rows: u16,
@@ -38,14 +53,14 @@ impl TermColor {
         use gpui::rgb;
         match self {
             TermColor::Default => {
-                if is_fg { rgb(0xcdd6f4) } else { rgb(0x00000000) }
+                if is_fg { rgb(0xc9d1d9) } else { rgb(0x00000000) }
             }
             TermColor::Indexed(idx) => {
                 let hex = match idx {
-                    0 => 0x45475a, 1 => 0xf38ba8, 2 => 0xa6e3a1, 3 => 0xf9e2af,
-                    4 => 0x89b4fa, 5 => 0xf5c2e7, 6 => 0x94e2d5, 7 => 0xbac2de,
-                    8 => 0x585b70, 9 => 0xf38ba8, 10 => 0xa6e3a1, 11 => 0xf9e2af,
-                    12 => 0x89b4fa, 13 => 0xf5c2e7, 14 => 0x94e2d5, 15 => 0xa6adc8,
+                    0 => 0x484f58, 1 => 0xf85149, 2 => 0x3fb950, 3 => 0xd29922,
+                    4 => 0x58a6ff, 5 => 0xbc8cff, 6 => 0x56d4dd, 7 => 0xb1bac4,
+                    8 => 0x6e7681, 9 => 0xf85149, 10 => 0x3fb950, 11 => 0xd29922,
+                    12 => 0x58a6ff, 13 => 0xbc8cff, 14 => 0x56d4dd, 15 => 0x8b949e,
                     16..=231 => {
                         let n = idx - 16;
                         let b = (n % 6) * 51; let g = ((n / 6) % 6) * 51; let r = (n / 36) * 51;
@@ -55,7 +70,7 @@ impl TermColor {
                         let v = 8 + (idx - 232) * 10;
                         ((v as u32) << 16) | ((v as u32) << 8) | (v as u32)
                     }
-                    _ => 0xcdd6f4,
+                    _ => 0xc9d1d9,
                 };
                 rgb(hex)
             }
@@ -187,13 +202,15 @@ impl Terminal {
         let writer = pair.master.take_writer()?;
         let mut reader = pair.master.try_clone_reader()?;
 
-        // Create alacritty terminal
+        // Create alacritty terminal with title listener
         let config = Config::default();
         let dimensions = TermDimensions {
             columns: cols as usize,
             screen_lines: rows as usize,
         };
-        let term = Term::new(config, &dimensions, VoidListener);
+        let osc_title: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let listener = TitleListener { title: osc_title.clone() };
+        let term = Term::new(config, &dimensions, listener);
         let term = Arc::new(Mutex::new(term));
 
         let has_new_data = Arc::new(AtomicBool::new(false));
@@ -226,6 +243,7 @@ impl Terminal {
             master_pty,
             _reader_handle: Some(reader_handle),
             has_new_data,
+            osc_title,
             title,
             cols,
             rows,
@@ -360,5 +378,10 @@ impl Terminal {
 
     pub fn check_and_clear_new_data(&self) -> bool {
         self.has_new_data.swap(false, Ordering::Relaxed)
+    }
+
+    /// Take the latest OSC title if one was set since last call.
+    pub fn take_osc_title(&self) -> Option<String> {
+        self.osc_title.lock().unwrap().take()
     }
 }

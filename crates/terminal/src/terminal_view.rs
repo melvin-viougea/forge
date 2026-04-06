@@ -42,6 +42,12 @@ impl Selection {
     }
 }
 
+pub enum TerminalViewEvent {
+    TitleChanged(String),
+}
+
+impl gpui::EventEmitter<TerminalViewEvent> for TerminalView {}
+
 pub struct TerminalView {
     pub terminal: Terminal,
     focus_handle: FocusHandle,
@@ -52,18 +58,19 @@ pub struct TerminalView {
     is_selecting: bool,
     /// When true, terminal sizes itself for a narrow side panel (e.g. 280px).
     pub compact: bool,
+    detected_title: Option<String>,
 }
 
 mod colors {
     use gpui::rgb;
     use gpui::Rgba;
 
-    pub fn base() -> Rgba { rgb(0x1e1e2e) }
-    pub fn mantle() -> Rgba { rgb(0x181825) }
-    pub fn text() -> Rgba { rgb(0xcdd6f4) }
-    pub fn cursor() -> Rgba { rgb(0xf5a97f) }
-    pub fn surface1() -> Rgba { rgb(0x45475a) }
-    pub fn selection() -> Rgba { rgb(0x45475a) }
+    pub fn base() -> Rgba { rgb(0x0a0e14) }
+    pub fn mantle() -> Rgba { rgb(0x0d1117) }
+    pub fn text() -> Rgba { rgb(0xc9d1d9) }
+    pub fn cursor() -> Rgba { rgb(0x58a6ff) }
+    pub fn surface1() -> Rgba { rgb(0x21262d) }
+    pub fn selection() -> Rgba { rgb(0x1a3050) }
 }
 
 impl TerminalView {
@@ -80,6 +87,30 @@ impl TerminalView {
                 cx.background_executor().timer(Duration::from_millis(50)).await;
                 let result = this.update(cx, |view, cx| {
                     if view.terminal.check_and_clear_new_data() {
+                        // Check for OSC title changes from the terminal
+                        if let Some(osc_title) = view.terminal.take_osc_title() {
+                            // Extract first word as process name
+                            let process_name = osc_title
+                                .split_whitespace()
+                                .next()
+                                .unwrap_or(&osc_title)
+                                .to_string();
+                            // Ignore shell prompt noise (symbols, single chars, paths)
+                            let looks_like_process = process_name.len() >= 2
+                                && process_name.chars().any(|c| c.is_ascii_alphabetic())
+                                && !process_name.starts_with('/');
+                            if looks_like_process {
+                                let mut chars = process_name.chars();
+                                let capitalized = match chars.next() {
+                                    Some(c) => c.to_uppercase().to_string() + chars.as_str(),
+                                    None => process_name.clone(),
+                                };
+                                if view.detected_title.as_ref() != Some(&capitalized) {
+                                    view.detected_title = Some(capitalized.clone());
+                                    cx.emit(TerminalViewEvent::TitleChanged(capitalized));
+                                }
+                            }
+                        }
                         cx.notify();
                     }
                 });
@@ -98,6 +129,7 @@ impl TerminalView {
             selection: None,
             is_selecting: false,
             compact: false,
+            detected_title: None,
         }
     }
 }
@@ -109,8 +141,8 @@ const CHAR_WIDTH: f32 = 8.4;
 const LINE_HEIGHT: f32 = 18.0;
 const CONTENT_PADDING: f32 = 8.0;
 
-/// Layout offsets: left dock (200) + pane sidebar (200) for X, titlebar+divider (30) for Y
-const LAYOUT_OFFSET_X: f32 = 200.0 + 200.0;
+/// Layout offsets: left dock (200) + pane sidebar (240) for X, titlebar+divider (30) for Y
+const LAYOUT_OFFSET_X: f32 = 200.0 + 240.0;
 const LAYOUT_OFFSET_Y: f32 = 30.0;
 
 impl TerminalView {
@@ -329,8 +361,8 @@ impl Render for TerminalView {
             let h = ((available_h - 200.0) / 2.0).max(80.0);
             (w, h)
         } else {
-            // Center pane: full width minus left dock(200) + pane sidebar(200) + right dock(280) + padding
-            let w = (available_w - 710.0).max(200.0);
+            // Center pane: full width minus left dock(200) + pane sidebar(240) + right dock(280) + padding
+            let w = (available_w - 750.0).max(200.0);
             let h = (available_h - 50.0).max(100.0);
             (w, h)
         };

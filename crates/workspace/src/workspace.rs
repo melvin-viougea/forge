@@ -42,7 +42,7 @@ impl Render for IdeWorkspace {
             .bg(theme::base())
             .text_color(theme::text())
             .font_family("Berkeley Mono, SF Mono, Menlo, monospace")
-            // Titlebar with update button (left) and app name (right)
+            // Titlebar
             .child(
                 div()
                     .flex()
@@ -52,7 +52,6 @@ impl Render for IdeWorkspace {
                     .h(px(28.))
                     .flex_shrink_0()
                     .bg(theme::mantle())
-                    // Left: traffic lights + FORGE v0.9
                     .child(
                         div()
                             .flex()
@@ -64,12 +63,10 @@ impl Render for IdeWorkspace {
                                     .text_xs()
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(theme::blue())
-                                    .child("FORGE v0.9.6"),
+                                    .child("FORGE v0.9.7"),
                             ),
                     )
-                    // Center spacer
                     .child(div().flex_1())
-                    // Right: update button (only when available)
                     .when_some(self.update_version.clone(), |d: Div, _version| {
                         d.child(
                             div()
@@ -82,19 +79,18 @@ impl Render for IdeWorkspace {
                                 .px(px(8.))
                                 .py(px(2.))
                                 .bg(theme::surface0())
-                                .rounded(px(4.))
+                                .rounded(px(3.))
                                 .cursor_pointer()
                                 .text_xs()
-                                .text_color(theme::text())
+                                .text_color(theme::blue())
                                 .hover(|d| d.bg(theme::surface1()))
-                                .child("↓ Restart to Update")
+                                .child("Update Available")
                                 .on_click(cx.listener(|_this, _ev, _window, cx| {
                                     cx.emit(WorkspaceEvent::UpdateClicked);
                                 })),
                         )
                     }),
             )
-            // Divider between titlebar and content
             .child(
                 div()
                     .w_full()
@@ -102,7 +98,7 @@ impl Render for IdeWorkspace {
                     .flex_shrink_0()
                     .bg(theme::surface1()),
             )
-            // Main content row: left dock | center | right dock
+            // Main content
             .child(
                 div()
                     .flex()

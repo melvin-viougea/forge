@@ -8,6 +8,7 @@ pub struct Tab {
     pub id: usize,
     pub title: String,
     pub icon: &'static str,
+    pub detail: String,
     pub view: AnyView,
     pub closable: bool,
 }
@@ -35,13 +36,21 @@ impl Pane {
         }
     }
 
-    pub fn add_tab(&mut self, title: String, icon: &'static str, view: AnyView, closable: bool) -> usize {
+    pub fn add_tab(
+        &mut self,
+        title: String,
+        icon: &'static str,
+        detail: String,
+        view: AnyView,
+        closable: bool,
+    ) -> usize {
         let id = self.next_tab_id;
         self.next_tab_id += 1;
         self.tabs.push(Tab {
             id,
             title,
             icon,
+            detail,
             view,
             closable,
         });
@@ -51,7 +60,7 @@ impl Pane {
 
     pub fn close_tab(&mut self, tab_id: usize) {
         if self.tabs.len() <= 1 {
-            return; // Always keep at least one terminal
+            return;
         }
         if let Some(idx) = self.tabs.iter().position(|t| t.id == tab_id) {
             self.tabs.remove(idx);
@@ -67,11 +76,17 @@ impl Pane {
         }
     }
 
+    pub fn set_tab_title(&mut self, tab_id: usize, title: String) {
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+            tab.title = title;
+        }
+    }
+
     pub fn tab_count(&self) -> usize {
         self.tabs.len()
     }
 
-    /// Vertical panel listing all terminal sessions (Cursor Glass style)
+    /// CMUX-style floating card sidebar
     fn render_sidebar(&self, cx: &mut Context<Self>) -> Div {
         let active_tab = self.active_tab;
         let count = self.tabs.len();
@@ -79,53 +94,38 @@ impl Pane {
         div()
             .flex()
             .flex_col()
-            .w(px(200.))
-            .min_w(px(200.))
+            .w(px(240.))
+            .min_w(px(240.))
             .h_full()
             .flex_shrink_0()
             .bg(theme::mantle())
             .border_r_1()
             .border_color(theme::surface1())
-            // Header: "N Terminals  +"
+            // New Terminal button
             .child(
                 div()
+                    .id("add-tab")
                     .flex()
-                    .flex_row()
                     .items_center()
-                    .w_full()
-                    .h(px(36.))
-                    .min_h(px(36.))
+                    .justify_center()
+                    .h(px(32.))
                     .flex_shrink_0()
-                    .px(px(12.))
-                    .border_b_1()
-                    .border_color(theme::surface1())
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_xs()
-                            .text_color(theme::subtext())
-                            .child(format!("{} Terminal{}", count, if count != 1 { "s" } else { "" })),
-                    )
-                    .child(
-                        div()
-                            .id("add-tab")
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .w(px(24.))
-                            .h(px(24.))
-                            .rounded(px(4.))
-                            .cursor_pointer()
-                            .text_sm()
-                            .text_color(theme::overlay())
-                            .hover(|d| d.bg(theme::surface0()).text_color(theme::text()))
-                            .child("+")
-                            .on_click(cx.listener(|_this, _ev, _window, cx| {
-                                cx.emit(PaneEvent::NewTabRequested);
-                            })),
-                    ),
+                    .mx(px(6.))
+                    .mt(px(6.))
+                    .mb(px(6.))
+                    .rounded(px(6.))
+                    .cursor_pointer()
+                    .text_xs()
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme::subtext())
+                    .bg(theme::surface0())
+                    .hover(|d| d.bg(theme::surface1()).text_color(theme::text()))
+                    .child("+ New Terminal")
+                    .on_click(cx.listener(|_this, _ev, _window, cx| {
+                        cx.emit(PaneEvent::NewTabRequested);
+                    })),
             )
-            // Terminal entries
+            // Terminal cards
             .child(
                 div()
                     .id("terminal-list")
@@ -133,7 +133,8 @@ impl Pane {
                     .flex()
                     .flex_col()
                     .overflow_y_scroll()
-                    .py(px(4.))
+                    .p(px(6.))
+                    .gap(px(2.))
                     .children(self.tabs.iter().enumerate().map(|(idx, tab)| {
                         let tab_id = tab.id;
                         let is_active = idx == active_tab;
@@ -142,65 +143,63 @@ impl Pane {
                         div()
                             .id(ElementId::Name(format!("tab-{}", tab_id).into()))
                             .flex()
-                            .flex_row()
-                            .items_center()
+                            .flex_col()
                             .w_full()
-                            .h(px(32.))
-                            .px(px(8.))
-                            .mx(px(4.))
-                            .rounded(px(4.))
+                            .px(px(10.))
+                            .py(px(8.))
+                            .rounded(px(6.))
                             .cursor_pointer()
                             .when(is_active, |d: Stateful<Div>| {
-                                d.bg(theme::surface0())
+                                d.bg(theme::surface1())
+                                    .border_l_2()
+                                    .border_color(theme::blue())
                             })
                             .when(!is_active, |d: Stateful<Div>| {
                                 d.hover(|d| d.bg(theme::surface0()))
                             })
-                            // Terminal icon
+                            // Title row with close button
                             .child(
                                 div()
-                                    .flex_shrink_0()
-                                    .text_xs()
-                                    .text_color(theme::overlay())
-                                    .mr(px(8.))
-                                    .child(tab.icon),
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .w_full()
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .truncate()
+                                            .text_xs()
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(if is_active { theme::text() } else { theme::subtext() })
+                                            .child(tab.title.clone()),
+                                    )
+                                    .when(closable, |d: Div| {
+                                        d.child(
+                                            div()
+                                                .id(ElementId::Name(format!("close-{}", tab_id).into()))
+                                                .flex_shrink_0()
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .w(px(16.))
+                                                .h(px(16.))
+                                                .rounded(px(3.))
+                                                .text_xs()
+                                                .text_color(theme::overlay())
+                                                .cursor_pointer()
+                                                .hover(|d| d.text_color(theme::text()).bg(theme::surface0()))
+                                                .child("×")
+                                                .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+                                                    cx.stop_propagation();
+                                                })
+                                                .on_click(cx.listener(move |this, _ev, _window, cx| {
+                                                    this.close_tab(tab_id);
+                                                    cx.notify();
+                                                })),
+                                        )
+                                    }),
                             )
-                            // Title
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .truncate()
-                                    .text_xs()
-                                    .text_color(if is_active { theme::text() } else { theme::subtext() })
-                                    .child(tab.title.clone()),
-                            )
-                            // Close button (visible on hover via group)
-                            .when(closable, |d: Stateful<Div>| {
-                                d.child(
-                                    div()
-                                        .id(ElementId::Name(format!("close-{}", tab_id).into()))
-                                        .flex_shrink_0()
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .w(px(20.))
-                                        .h(px(20.))
-                                        .rounded(px(4.))
-                                        .text_xs()
-                                        .text_color(theme::overlay())
-                                        .cursor_pointer()
-                                        .hover(|d| d.text_color(theme::text()).bg(theme::surface1()))
-                                        .child("×")
-                                        .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
-                                            cx.stop_propagation();
-                                        })
-                                        .on_click(cx.listener(move |this, _ev, _window, cx| {
-                                            this.close_tab(tab_id);
-                                            cx.notify();
-                                        })),
-                                )
-                            })
                             .on_click(cx.listener(move |this, _ev, _window, cx| {
                                 this.set_active_tab(tab_id);
                                 cx.notify();
@@ -219,11 +218,9 @@ impl Render for Pane {
             .flex_row()
             .size_full()
             .bg(theme::base())
-            // Vertical sidebar (left)
             .when(has_tabs, |d: Div| {
                 d.child(self.render_sidebar(cx))
             })
-            // Active terminal content (right)
             .child(
                 div()
                     .flex_1()
@@ -233,49 +230,32 @@ impl Render for Pane {
                         d.child(tab.view.clone())
                     })
                     .when(!has_tabs, |d: Div| {
-                        d.child(Self::render_welcome(cx))
+                        d.child(Self::render_welcome())
                     }),
             )
     }
 }
 
 impl Pane {
-    fn render_welcome(cx: &mut Context<Self>) -> Div {
+    fn render_welcome() -> Div {
         div()
             .size_full()
             .flex()
             .flex_col()
             .items_center()
             .justify_center()
-            .gap(px(16.))
+            .gap(px(12.))
             .child(
                 div()
-                    .w(px(64.))
-                    .h(px(64.))
-                    .rounded(px(16.))
-                    .bg(theme::blue())
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        div()
-                            .text_color(theme::base())
-                            .text_size(px(32.))
-                            .font_weight(FontWeight::BOLD)
-                            .child("F"),
-                    ),
-            )
-            .child(
-                div()
-                    .text_color(theme::text())
-                    .text_size(px(24.))
+                    .text_color(theme::blue())
+                    .text_size(px(28.))
                     .font_weight(FontWeight::BOLD)
-                    .child("Forge"),
+                    .child("FORGE"),
             )
             .child(
                 div()
                     .text_color(theme::overlay())
-                    .text_sm()
+                    .text_xs()
                     .child("Multi-Agent IDE"),
             )
     }
