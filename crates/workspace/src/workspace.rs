@@ -52,7 +52,7 @@ impl Render for IdeWorkspace {
                     .h(px(28.))
                     .flex_shrink_0()
                     .bg(theme::mantle())
-                    // Left: traffic lights + FORGE v0.10
+                    // Left: traffic lights + FORGE v0.9
                     .child(
                         div()
                             .flex()
@@ -64,7 +64,7 @@ impl Render for IdeWorkspace {
                                     .text_xs()
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(theme::blue())
-                                    .child("FORGE v0.10.0"),
+                                    .child("FORGE v0.9.4"),
                             ),
                     )
                     // Center spacer
