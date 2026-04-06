@@ -4,6 +4,17 @@ use std::time::Duration;
 
 use crate::terminal::{CellStyle, TermColor, Terminal, TerminalLine};
 
+// ── Layout dimensions (shared via Global) ───────────────────
+
+/// Stores current layout widths so the terminal can compute its actual available space.
+pub struct LayoutDimensions {
+    pub left_dock_width: f32,
+    pub right_dock_width: f32,
+    pub pane_sidebar_width: f32,
+}
+
+impl Global for LayoutDimensions {}
+
 // ── Selection model ─────────────────────────────────────────
 
 #[derive(Clone, Debug)]
@@ -369,20 +380,24 @@ impl Render for TerminalView {
                 .unwrap_or(CHAR_WIDTH)
         };
 
-        // Resize terminal based on window viewport
+        // Resize terminal based on window viewport and actual layout dimensions
         let viewport = window.viewport_size();
         let available_w: f32 = viewport.width.into();
         let available_h: f32 = viewport.height.into();
+
+        let (left_dock_w, right_dock_w, sidebar_w) = cx.try_global::<LayoutDimensions>()
+            .map(|l| (l.left_dock_width, l.right_dock_width, l.pane_sidebar_width))
+            .unwrap_or((200.0, 280.0, 240.0));
+
         let (term_w, term_h) = if self.compact {
-            // Right panel: 280px dock minus padding/scrollbar
-            let w = (280.0 - 26.0_f32).max(100.0);
-            // Approximate: half the remaining height (shared with changes/files)
+            // Right panel: dock width minus padding/scrollbar
+            let w = (right_dock_w - 26.0_f32).max(100.0);
             let h = ((available_h - 200.0) / 2.0).max(80.0);
             (w, h)
         } else {
-            // Center pane: full width minus left dock(200) + pane sidebar(240) + right dock(280)
-            // + terminal padding(16) + scrollbar(10) = 746
-            let w = (available_w - 746.0).max(200.0);
+            // Center pane: viewport minus docks, sidebar, padding(16), scrollbar(10), dividers(10)
+            let deduction = left_dock_w + sidebar_w + right_dock_w + 36.0;
+            let w = (available_w - deduction).max(200.0);
             let h = (available_h - 50.0).max(100.0);
             (w, h)
         };

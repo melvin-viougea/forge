@@ -28,6 +28,14 @@ impl Dock {
     pub fn set_view(&mut self, view: AnyView) {
         self.view = Some(view);
     }
+
+    pub fn width(&self) -> f32 {
+        self.width
+    }
+
+    pub fn set_width(&mut self, width: f32) {
+        self.width = width.clamp(150., 600.);
+    }
 }
 
 impl Render for Dock {
@@ -42,8 +50,6 @@ impl Render for Dock {
             .flex_shrink_0()
             .h_full()
             .bg(theme::mantle())
-            .when(is_left, |d: Div| d.border_r_1().border_color(theme::surface1()))
-            .when(!is_left, |d: Div| d.border_l_1().border_color(theme::surface1()))
             .children(self.view.clone())
     }
 }

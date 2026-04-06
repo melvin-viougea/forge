@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use ide_file_explorer::FileExplorerPanel;
 use ide_git_panel::{CommitPanel, GitChangesPanel, GitLogPanel, RunnerEvent};
-use ide_terminal::{TerminalView, TerminalViewEvent};
+use ide_terminal::{LayoutDimensions, TerminalView, TerminalViewEvent};
 use ide_workspace::{IdeWorkspace, Pane, PaneEvent, WorkspaceEvent};
 
 // ── Project Panel (left sidebar) ─────────────────────────────
@@ -163,6 +163,10 @@ struct RightPanel {
     active_tab: RightTab,
     runner_terminal: Option<Entity<TerminalView>>,
     log_expanded: bool,
+    log_height: f32,
+    dragging_log: bool,
+    drag_start_y: f32,
+    drag_start_height: f32,
 }
 
 impl RightPanel {
@@ -180,6 +184,10 @@ impl RightPanel {
             active_tab: RightTab::Changes,
             runner_terminal: None,
             log_expanded: false,
+            log_height: 250.,
+            dragging_log: false,
+            drag_start_y: 0.,
+            drag_start_height: 0.,
         }
     }
 
@@ -205,14 +213,28 @@ impl Render for RightPanel {
         let is_files = matches!(self.active_tab, RightTab::Files);
         let is_runner = matches!(self.active_tab, RightTab::Runner);
 
+        let is_dragging_log = self.dragging_log;
+        let log_height = self.log_height;
+
         div()
             .flex()
             .flex_col()
             .size_full()
             .bg(colors::mantle())
-            // ── Action bar (Run + Push) ──────────────────────
-            .child(self.commit_panel.clone())
-            .child(div().w_full().h(px(1.)).flex_shrink_0().bg(colors::surface1()))
+            .when(is_dragging_log, |d| {
+                d.cursor(CursorStyle::ResizeUpDown)
+            })
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _window, cx| {
+                if this.dragging_log {
+                    let y: f32 = ev.position.y.into();
+                    let delta = this.drag_start_y - y;
+                    this.log_height = (this.drag_start_height + delta).clamp(100., 600.);
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _ev: &MouseUpEvent, _window, _cx| {
+                this.dragging_log = false;
+            }))
             // ── Tabs ─────────────────────────────────────────
             .child(
                 div()
@@ -318,14 +340,36 @@ impl Render for RightPanel {
                         |d: Div, terminal| d.child(terminal),
                     ),
             )
+            // ── Git Log divider (draggable) ────────────────
+            .child(
+                div()
+                    .id("log-divider")
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .w_full()
+                    .h(px(5.))
+                    .flex_shrink_0()
+                    .when(log_expanded, |d: Stateful<Div>| {
+                        d.cursor(CursorStyle::ResizeUpDown)
+                            .hover(|d| d.bg(colors::blue()))
+                            .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, _window, cx| {
+                                let y: f32 = ev.position.y.into();
+                                this.dragging_log = true;
+                                this.drag_start_y = y;
+                                this.drag_start_height = this.log_height;
+                                cx.notify();
+                            }))
+                    })
+                    .child(div().w_full().h(px(1.)).bg(colors::surface1())),
+            )
             // ── Git Log section (collapsible, bottom) ────────
-            .child(div().w_full().h(px(1.)).flex_shrink_0().bg(colors::surface1()))
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .w_full()
-                    .when(log_expanded, |d: Div| d.flex_1().min_h(px(100.)))
+                    .when(log_expanded, |d: Div| d.h(px(log_height)).min_h(px(100.)))
                     .child(
                         div()
                             .id("log-header")
@@ -503,6 +547,11 @@ impl AppView {
                         panel.set_runner(tv.clone());
                         cx.notify();
                     });
+                    // Sync topbar state
+                    this.workspace.update(cx, |ws, cx| {
+                        ws.is_running = true;
+                        cx.notify();
+                    });
                     cx.notify();
 
                     // Write command after shell initializes
@@ -526,6 +575,11 @@ impl AppView {
                     state.runner_terminal = None;
                     state.right_panel.update(cx, |panel, cx| {
                         panel.clear_runner();
+                        cx.notify();
+                    });
+                    // Sync topbar state
+                    this.workspace.update(cx, |ws, cx| {
+                        ws.is_running = false;
                         cx.notify();
                     });
                 }
@@ -568,8 +622,15 @@ impl AppView {
         let pane = state.pane.clone();
         let right_panel = state.right_panel.clone();
 
+        // Sync topbar button states from the new active project
+        let commit_panel = right_panel.read(cx).commit_panel.clone();
+        let is_running = commit_panel.read(cx).is_running;
+        let is_pushing = commit_panel.read(cx).is_pushing;
+
         self.workspace.update(cx, |ws, cx| {
             ws.center_pane = pane;
+            ws.is_running = is_running;
+            ws.is_pushing = is_pushing;
             ws.right_dock.update(cx, |dock, _cx| {
                 dock.set_view(AnyView::from(right_panel));
             });
@@ -581,7 +642,20 @@ impl AppView {
 }
 
 impl Render for AppView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Update layout dimensions global so terminals can compute their actual size
+        {
+            let ws = self.workspace.read(cx);
+            let left_w = ws.left_dock.read(cx).width();
+            let right_w = ws.right_dock.read(cx).width();
+            let sidebar_w = ws.center_pane.read(cx).sidebar_width();
+            cx.set_global(LayoutDimensions {
+                left_dock_width: left_w,
+                right_dock_width: right_w,
+                pane_sidebar_width: sidebar_w,
+            });
+        }
+
         let base = div().size_full().child(self.workspace.clone());
 
         if let Some((percent, message)) = &self.update_status {
@@ -773,6 +847,55 @@ fn main() {
                             }
                             WorkspaceEvent::SettingsClicked => {
                                 // TODO: open settings panel
+                            }
+                            WorkspaceEvent::RunClicked => {
+                                if let Some(idx) = this.active_project {
+                                    let commit_panel = this.project_states[idx].right_panel.read(cx).commit_panel.clone();
+                                    commit_panel.update(cx, |panel, cx| {
+                                        panel.toggle_runner(cx);
+                                    });
+                                    let is_running = commit_panel.read(cx).is_running;
+                                    this.workspace.update(cx, |ws, cx| {
+                                        ws.is_running = is_running;
+                                        cx.notify();
+                                    });
+                                }
+                            }
+                            WorkspaceEvent::PushClicked => {
+                                if let Some(idx) = this.active_project {
+                                    let commit_panel = this.project_states[idx].right_panel.read(cx).commit_panel.clone();
+                                    let is_pushing = commit_panel.read(cx).is_pushing;
+                                    if is_pushing {
+                                        return;
+                                    }
+                                    commit_panel.update(cx, |panel, cx| {
+                                        panel.is_pushing = true;
+                                        cx.notify();
+                                    });
+                                    this.workspace.update(cx, |ws, cx| {
+                                        ws.is_pushing = true;
+                                        cx.notify();
+                                    });
+
+                                    let root = this.project_states[idx].path.clone();
+                                    let ws = this.workspace.clone();
+                                    let cp = commit_panel.clone();
+                                    cx.spawn(async move |_this: WeakEntity<AppView>, cx: &mut AsyncApp| {
+                                        let result = cx.background_executor().spawn(async move {
+                                            ide_git_panel::operations::one_button_commit_and_push(&root)
+                                        }).await;
+                                        let _ = result;
+
+                                        cp.update(cx, |panel, cx| {
+                                            panel.is_pushing = false;
+                                            cx.notify();
+                                        }).ok();
+                                        ws.update(cx, |ws, cx| {
+                                            ws.is_pushing = false;
+                                            cx.notify();
+                                        }).ok();
+                                    }).detach();
+                                }
                             }
                         }
                     });

@@ -33,7 +33,7 @@ impl gpui::EventEmitter<RunnerEvent> for CommitPanel {}
 /// Action bar: Run/Stop + Push
 pub struct CommitPanel {
     root_path: PathBuf,
-    is_pushing: bool,
+    pub is_pushing: bool,
     pub is_running: bool,
 }
 
@@ -46,7 +46,7 @@ impl CommitPanel {
         }
     }
 
-    fn toggle_runner(&mut self, cx: &mut Context<Self>) {
+    pub fn toggle_runner(&mut self, cx: &mut Context<Self>) {
         if self.is_running {
             self.is_running = false;
             cx.emit(RunnerEvent::Stop);

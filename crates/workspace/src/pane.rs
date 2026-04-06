@@ -23,6 +23,10 @@ pub struct Pane {
     tabs: Vec<Tab>,
     active_tab: usize,
     next_tab_id: usize,
+    sidebar_width: f32,
+    dragging_sidebar: bool,
+    drag_start_x: f32,
+    drag_start_width: f32,
 }
 
 impl gpui::EventEmitter<PaneEvent> for Pane {}
@@ -33,6 +37,10 @@ impl Pane {
             tabs: Vec::new(),
             active_tab: 0,
             next_tab_id: 0,
+            sidebar_width: 240.,
+            dragging_sidebar: false,
+            drag_start_x: 0.,
+            drag_start_width: 0.,
         }
     }
 
@@ -86,6 +94,10 @@ impl Pane {
         self.tabs.len()
     }
 
+    pub fn sidebar_width(&self) -> f32 {
+        self.sidebar_width
+    }
+
     /// CMUX-style floating card sidebar
     fn render_sidebar(&self, cx: &mut Context<Self>) -> Div {
         let active_tab = self.active_tab;
@@ -94,13 +106,11 @@ impl Pane {
         div()
             .flex()
             .flex_col()
-            .w(px(240.))
-            .min_w(px(240.))
+            .w(px(self.sidebar_width))
+            .min_w(px(self.sidebar_width))
             .h_full()
             .flex_shrink_0()
             .bg(theme::mantle())
-            .border_r_1()
-            .border_color(theme::surface1())
             // New Terminal button
             .child(
                 div()
@@ -212,14 +222,51 @@ impl Pane {
 impl Render for Pane {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let has_tabs = !self.tabs.is_empty();
+        let is_dragging = self.dragging_sidebar;
 
         div()
             .flex()
             .flex_row()
             .size_full()
             .bg(theme::base())
+            .when(is_dragging, |d| {
+                d.cursor(CursorStyle::ResizeLeftRight)
+            })
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _window, cx| {
+                if this.dragging_sidebar {
+                    let x: f32 = ev.position.x.into();
+                    let delta = x - this.drag_start_x;
+                    this.sidebar_width = (this.drag_start_width + delta).clamp(150., 400.);
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _ev: &MouseUpEvent, _window, _cx| {
+                this.dragging_sidebar = false;
+            }))
             .when(has_tabs, |d: Div| {
                 d.child(self.render_sidebar(cx))
+            })
+            // Sidebar divider
+            .when(has_tabs, |d: Div| {
+                d.child(
+                    div()
+                        .id("sidebar-divider")
+                        .flex()
+                        .justify_center()
+                        .w(px(5.))
+                        .h_full()
+                        .flex_shrink_0()
+                        .cursor(CursorStyle::ResizeLeftRight)
+                        .hover(|d| d.bg(theme::blue()))
+                        .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, _window, cx| {
+                            let x: f32 = ev.position.x.into();
+                            this.dragging_sidebar = true;
+                            this.drag_start_x = x;
+                            this.drag_start_width = this.sidebar_width;
+                            cx.notify();
+                        }))
+                        .child(div().w(px(1.)).h_full().bg(theme::surface1())),
+                )
             })
             .child(
                 div()
