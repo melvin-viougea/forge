@@ -378,6 +378,7 @@ struct AppView {
     active_project: Option<usize>,
     terminal_count: usize,
     update_info: Option<updater::UpdateInfo>,
+    update_status: Option<(u8, String)>,
     _project_subscription: Subscription,
     _workspace_subscription: Subscription,
     _update_task: Task<()>,
@@ -572,9 +573,60 @@ impl AppView {
 
 impl Render for AppView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .size_full()
-            .child(self.workspace.clone())
+        let base = div().size_full().child(self.workspace.clone());
+
+        if let Some((percent, message)) = &self.update_status {
+            let pct = *percent;
+            let msg = message.clone();
+            base.child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .bg(rgba(0x000000dd))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(16.))
+                            .child(
+                                div()
+                                    .text_color(rgb(0xc9d1d9))
+                                    .text_size(px(16.))
+                                    .child(msg),
+                            )
+                            .child(
+                                // Progress bar container
+                                div()
+                                    .w(px(300.))
+                                    .h(px(6.))
+                                    .rounded(px(3.))
+                                    .bg(rgb(0x21262d))
+                                    .child(
+                                        // Progress bar fill
+                                        div()
+                                            .h_full()
+                                            .rounded(px(3.))
+                                            .bg(rgb(0x58a6ff))
+                                            .w(px(300. * pct as f32 / 100.)),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .text_color(rgb(0x8b949e))
+                                    .text_size(px(13.))
+                                    .child(format!("{}%", pct)),
+                            ),
+                    ),
+            )
+        } else {
+            base
+        }
     }
 }
 
@@ -645,31 +697,68 @@ fn main() {
                     let workspace_sub = cx.subscribe(&workspace, |this: &mut AppView, _ws, event: &WorkspaceEvent, cx| {
                         match event {
                             WorkspaceEvent::UpdateClicked => {
-                                if let Some(info) = &this.update_info {
-                                    let info = info.clone();
-                                    cx.spawn(async |_this: WeakEntity<AppView>, cx: &mut AsyncApp| {
-                                        let result = cx.background_executor().spawn(async move {
-                                            updater::download_and_install(&info)
+                                let info = this.update_info.clone();
+                                if let Some(info) = info {
+                                    this.update_status = Some((0, "Preparing update...".to_string()));
+                                    cx.notify();
+                                    cx.spawn(async move |this: WeakEntity<AppView>, cx: &mut AsyncApp| {
+                                        // Step 1: Download (0% -> 60%)
+                                        this.update(cx, |view, cx| {
+                                            view.update_status = Some((10, "Downloading update...".to_string()));
+                                            cx.notify();
+                                        }).ok();
+
+                                        let info_clone = info.clone();
+                                        let dl_result = cx.background_executor().spawn(async move {
+                                            updater::update_step_download(&info_clone)
                                         }).await;
-                                        match result {
-                                            Ok(()) => updater::relaunch(),
-                                            Err(e) => {
-                                                log::error!("Auto-update failed: {}. Retrying with redownload...", e);
-                                                // Retry once more
-                                                let info2 = updater::check_for_update();
-                                                if let Some(info2) = info2 {
-                                                    match updater::download_and_install(&info2) {
-                                                        Ok(()) => updater::relaunch(),
-                                                        Err(e2) => {
-                                                            log::error!("Retry failed: {}. Opening releases page.", e2);
-                                                            let _ = std::process::Command::new("open")
-                                                                .arg("https://github.com/melvin-viougea/forge/releases/latest")
-                                                                .spawn();
-                                                        }
-                                                    }
-                                                }
-                                            }
+
+                                        if let Err(e) = dl_result {
+                                            log::error!("Download failed: {}", e);
+                                            this.update(cx, |view, cx| {
+                                                view.update_status = Some((0, format!("Error: {}", e)));
+                                                cx.notify();
+                                            }).ok();
+                                            cx.background_executor().timer(Duration::from_secs(3)).await;
+                                            this.update(cx, |view, cx| {
+                                                view.update_status = None;
+                                                cx.notify();
+                                            }).ok();
+                                            return;
                                         }
+
+                                        // Step 2: Install (60% -> 90%)
+                                        this.update(cx, |view, cx| {
+                                            view.update_status = Some((60, "Installing update...".to_string()));
+                                            cx.notify();
+                                        }).ok();
+
+                                        let install_result = cx.background_executor().spawn(async {
+                                            updater::update_step_install()
+                                        }).await;
+
+                                        if let Err(e) = install_result {
+                                            log::error!("Install failed: {}", e);
+                                            this.update(cx, |view, cx| {
+                                                view.update_status = Some((0, format!("Error: {}", e)));
+                                                cx.notify();
+                                            }).ok();
+                                            cx.background_executor().timer(Duration::from_secs(3)).await;
+                                            this.update(cx, |view, cx| {
+                                                view.update_status = None;
+                                                cx.notify();
+                                            }).ok();
+                                            return;
+                                        }
+
+                                        // Step 3: Restart (100%)
+                                        this.update(cx, |view, cx| {
+                                            view.update_status = Some((100, "Restarting...".to_string()));
+                                            cx.notify();
+                                        }).ok();
+
+                                        cx.background_executor().timer(Duration::from_millis(500)).await;
+                                        updater::relaunch();
                                     }).detach();
                                 }
                             }
@@ -708,6 +797,7 @@ fn main() {
                         active_project: None,
                         terminal_count: 0,
                         update_info: None,
+                        update_status: None,
                         _project_subscription: project_sub,
                         _workspace_subscription: workspace_sub,
                         _update_task: update_task,

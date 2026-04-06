@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-pub const CURRENT_VERSION: &str = "0.9.8";
+pub const CURRENT_VERSION: &str = "0.9.9";
 const GITHUB_REPO: &str = "melvin-viougea/forge";
 
 #[derive(Clone, Debug)]
@@ -41,31 +41,31 @@ pub fn check_for_update() -> Option<UpdateInfo> {
     }
 }
 
-/// Download and install update from DMG
-pub fn download_and_install(info: &UpdateInfo) -> Result<(), String> {
+/// Step-by-step update with progress
+pub fn update_step_download(info: &UpdateInfo) -> Result<(), String> {
     let dmg_path = "/tmp/forge-update.dmg";
     let mount_point = "/tmp/forge-update-mount";
-
-    // Clean previous attempt
     let _ = std::fs::remove_file(dmg_path);
     let _ = Command::new("hdiutil").args(["detach", mount_point, "-quiet"]).status();
 
-    // Download
     let status = Command::new("curl")
         .args(["-L", "-s", "-o", dmg_path, &info.download_url])
         .status()
         .map_err(|e| format!("Download failed: {}", e))?;
-
     if !status.success() {
         return Err("Download failed".to_string());
     }
+    Ok(())
+}
 
-    // Mount DMG
+pub fn update_step_install() -> Result<(), String> {
+    let dmg_path = "/tmp/forge-update.dmg";
+    let mount_point = "/tmp/forge-update-mount";
+
     let status = Command::new("hdiutil")
         .args(["attach", dmg_path, "-mountpoint", mount_point, "-nobrowse", "-quiet"])
         .status()
         .map_err(|e| format!("Mount failed: {}", e))?;
-
     if !status.success() {
         return Err("Mount DMG failed".to_string());
     }
@@ -76,24 +76,19 @@ pub fn download_and_install(info: &UpdateInfo) -> Result<(), String> {
         return Err("Forge.app not found in DMG".to_string());
     }
 
-    // Find the app bundle to replace
     let app_path = find_app_bundle()?;
-
-    // Remove old app and replace with new one
     let _ = std::fs::remove_dir_all(&app_path);
     let status = Command::new("cp")
         .args(["-R", &new_app, &app_path.display().to_string()])
         .status()
         .map_err(|e| format!("Install failed: {}", e))?;
 
-    // Unmount and cleanup
     let _ = Command::new("hdiutil").args(["detach", mount_point, "-quiet"]).status();
     let _ = std::fs::remove_file(dmg_path);
 
     if !status.success() {
         return Err("Failed to copy new version".to_string());
     }
-
     Ok(())
 }
 
