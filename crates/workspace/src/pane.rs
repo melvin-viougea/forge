@@ -285,10 +285,25 @@ impl Pane {
                                                 div()
                                                     .flex_1()
                                                     .min_w(px(0.))
+                                                    .flex()
+                                                    .flex_row()
+                                                    .items_center()
+                                                    .gap(px(4.))
                                                     .truncate()
                                                     .text_sm()
                                                     .font_weight(FontWeight::BOLD)
                                                     .text_color(if is_active { theme::text() } else { theme::subtext() })
+                                                    .when(tab.icon.ends_with(".svg"), |d: Div| {
+                                                        d.child(
+                                                            svg()
+                                                                .path(tab.icon)
+                                                                .size(px(14.))
+                                                                .text_color(if is_active { theme::blue() } else { theme::subtext() })
+                                                        )
+                                                    })
+                                                    .when(!tab.icon.ends_with(".svg"), |d: Div| {
+                                                        d.child(tab.icon)
+                                                    })
                                                     .child(tab.title.clone()),
                                             )
                                             .when(closable, |d: Div| {

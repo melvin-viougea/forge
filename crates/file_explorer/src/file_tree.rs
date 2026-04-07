@@ -22,22 +22,19 @@ pub struct FileEntry {
 }
 
 impl FileEntry {
-    pub fn icon(&self) -> &'static str {
+    pub fn icon_svg(&self) -> &'static str {
+        if self.is_dir {
+            "crates/app/assets/folder.svg"
+        } else {
+            "crates/app/assets/file.svg"
+        }
+    }
+
+    pub fn expand_indicator(&self) -> &'static str {
         if self.is_dir {
             if self.expanded { "v " } else { "> " }
         } else {
-            match self.path.extension().and_then(|e| e.to_str()) {
-                Some("rs") => "# ",
-                Some("toml") => "@ ",
-                Some("md") => "M ",
-                Some("json") => "{ ",
-                Some("yaml" | "yml") => "% ",
-                Some("ts" | "tsx") => "T ",
-                Some("js" | "jsx") => "J ",
-                Some("py") => "P ",
-                Some("lock") => "L ",
-                _ => "- ",
-            }
+            "  "
         }
     }
 }

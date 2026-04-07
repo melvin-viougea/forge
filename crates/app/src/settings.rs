@@ -10,9 +10,12 @@ fn settings_path() -> Option<PathBuf> {
 pub struct SavedSettings {
     pub theme: ThemeName,
     pub wallpaper: Option<String>,
+    pub wallpaper_opacity: f32,
+    pub wallpaper_crop_x: f32,
+    pub wallpaper_crop_y: f32,
 }
 
-pub fn save(theme: ThemeName, wallpaper: Option<&str>) {
+pub fn save(theme: ThemeName, wallpaper: Option<&str>, wallpaper_opacity: f32, crop_x: f32, crop_y: f32) {
     let Some(path) = settings_path() else { return };
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -21,7 +24,10 @@ pub fn save(theme: ThemeName, wallpaper: Option<&str>) {
         Some(p) => format!(",\"wallpaper\":\"{}\"", p.replace('\\', "\\\\").replace('"', "\\\"")),
         None => String::new(),
     };
-    let json = format!("{{\"theme\":\"{}\"{}}}", theme.as_str(), wp);
+    let json = format!(
+        "{{\"theme\":\"{}\"{},\"wallpaper_opacity\":{:.2},\"wallpaper_crop_x\":{:.4},\"wallpaper_crop_y\":{:.4}}}",
+        theme.as_str(), wp, wallpaper_opacity, crop_x, crop_y
+    );
     let _ = std::fs::write(&path, json);
 }
 
@@ -38,7 +44,19 @@ pub fn load() -> SavedSettings {
         .and_then(|c| parse_string(c, "wallpaper"))
         .filter(|p| PathBuf::from(p).exists());
 
-    SavedSettings { theme, wallpaper }
+    let wallpaper_opacity = content.as_ref()
+        .and_then(|c| parse_number(c, "wallpaper_opacity"))
+        .unwrap_or(0.65);
+
+    let wallpaper_crop_x = content.as_ref()
+        .and_then(|c| parse_number(c, "wallpaper_crop_x"))
+        .unwrap_or(0.5);
+
+    let wallpaper_crop_y = content.as_ref()
+        .and_then(|c| parse_number(c, "wallpaper_crop_y"))
+        .unwrap_or(0.5);
+
+    SavedSettings { theme, wallpaper, wallpaper_opacity, wallpaper_crop_x, wallpaper_crop_y }
 }
 
 fn parse_string(json: &str, key: &str) -> Option<String> {
@@ -53,4 +71,14 @@ fn parse_string(json: &str, key: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+fn parse_number(json: &str, key: &str) -> Option<f32> {
+    let pattern = format!("\"{}\"", key);
+    let start = json.find(&pattern)?;
+    let after = &json[start + pattern.len()..];
+    let colon = after.find(':')?;
+    let after_colon = after[colon + 1..].trim_start();
+    let end = after_colon.find(|c: char| c == ',' || c == '}').unwrap_or(after_colon.len());
+    after_colon[..end].trim().parse().ok()
 }

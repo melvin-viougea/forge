@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use ide_file_explorer::{FileExplorerPanel, FileExplorerEvent};
-use ide_git_panel::{CommitPanel, GitChangesPanel, GitChangesEvent, GitLogPanel, RunnerEvent};
+use ide_git_panel::{CommitPanel, CommitDiffView, GitChangesPanel, GitChangesEvent, GitLogPanel, GitLogEvent, RunnerEvent};
 use ide_workspace::theme::{self, ThemeName};
 use ide_workspace::{FileView, FileViewEvent};
 use ide_terminal::{LayoutDimensions, TerminalView, TerminalViewEvent};
@@ -295,19 +295,21 @@ impl Render for ProjectPanel {
 enum RightTab {
     Changes,
     Files,
-    Runner,
 }
 
 struct RightPanel {
     pub commit_panel: Entity<CommitPanel>,
     pub file_explorer: Entity<FileExplorerPanel>,
     pub git_changes: Entity<GitChangesPanel>,
-    git_log: Entity<GitLogPanel>,
+    pub git_log: Entity<GitLogPanel>,
     active_tab: RightTab,
     runner_terminal: Option<Entity<TerminalView>>,
     pub log_expanded: bool,
     pub log_height: f32,
+    pub runner_expanded: bool,
+    pub runner_height: f32,
     dragging_log: bool,
+    dragging_runner: bool,
     drag_start_y: f32,
     drag_start_height: f32,
 }
@@ -328,7 +330,10 @@ impl RightPanel {
             runner_terminal: None,
             log_expanded: false,
             log_height: 250.,
+            runner_expanded: true,
+            runner_height: 200.,
             dragging_log: false,
+            dragging_runner: false,
             drag_start_y: 0.,
             drag_start_height: 0.,
         }
@@ -336,13 +341,12 @@ impl RightPanel {
 
     fn set_runner(&mut self, terminal: Entity<TerminalView>) {
         self.runner_terminal = Some(terminal);
+        self.runner_expanded = true;
     }
 
     fn clear_runner(&mut self) {
         self.runner_terminal = None;
-        if matches!(self.active_tab, RightTab::Runner) {
-            self.active_tab = RightTab::Changes;
-        }
+        self.runner_expanded = false;
     }
 }
 
@@ -357,19 +361,20 @@ impl Render for RightPanel {
         let change_count = self.git_changes.read(cx).change_count();
         let has_runner = self.runner_terminal.is_some();
         let log_expanded = self.log_expanded;
+        let runner_expanded = self.runner_expanded;
 
         let is_changes = matches!(self.active_tab, RightTab::Changes);
         let is_files = matches!(self.active_tab, RightTab::Files);
-        let is_runner = matches!(self.active_tab, RightTab::Runner);
 
-        let is_dragging_log = self.dragging_log;
+        let is_dragging = self.dragging_log || self.dragging_runner;
         let log_height = self.log_height;
+        let runner_height = self.runner_height;
 
         div()
             .flex()
             .flex_col()
             .size_full()
-            .when(is_dragging_log, |d| {
+            .when(is_dragging, |d| {
                 d.cursor(CursorStyle::ResizeUpDown)
             })
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _window, cx| {
@@ -381,11 +386,17 @@ impl Render for RightPanel {
                         log.visible_height = this.log_height - 28.0;
                     });
                     cx.notify();
+                } else if this.dragging_runner {
+                    let y: f32 = ev.position.y.into();
+                    let delta = this.drag_start_y - y;
+                    this.runner_height = (this.drag_start_height + delta).clamp(100., 600.);
+                    cx.notify();
                 }
             }))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _ev: &MouseUpEvent, _window, cx| {
-                if this.dragging_log {
+                if this.dragging_log || this.dragging_runner {
                     this.dragging_log = false;
+                    this.dragging_runner = false;
                     cx.emit(RightPanelEvent::LayoutChanged);
                 }
             }))
@@ -451,35 +462,7 @@ impl Render for RightPanel {
                                 this.active_tab = RightTab::Files;
                                 cx.notify();
                             })),
-                    )
-                    // Runner tab
-                    .when(has_runner, |d: Div| {
-                        d.child(
-                            div()
-                                .id("tab-runner")
-                                .flex_1()
-                                .h_full()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .cursor_pointer()
-                                .text_sm()
-                                .when(is_runner, |d: Stateful<Div>| {
-                                    d.text_color(colors::text())
-                                        .border_b_2()
-                                        .border_color(colors::blue())
-                                })
-                                .when(!is_runner, |d: Stateful<Div>| {
-                                    d.text_color(colors::subtext())
-                                        .hover(|d| d.text_color(colors::text()))
-                                })
-                                .child("Runner")
-                                .on_click(cx.listener(|this, _ev, _window, cx| {
-                                    this.active_tab = RightTab::Runner;
-                                    cx.notify();
-                                })),
-                        )
-                    }),
+                    ),
             )
             // ── Content area ─────────────────────────────────
             .child(
@@ -487,12 +470,78 @@ impl Render for RightPanel {
                     .flex_1()
                     .overflow_hidden()
                     .when(is_changes, |d: Div| d.child(self.git_changes.clone()))
-                    .when(is_files, |d: Div| d.child(self.file_explorer.clone()))
-                    .when_some(
-                        if is_runner { self.runner_terminal.clone() } else { None },
-                        |d: Div, terminal| d.child(terminal),
-                    ),
+                    .when(is_files, |d: Div| d.child(self.file_explorer.clone())),
             )
+            // ── Runner section (above Git Log) ────────────────
+            .when(has_runner, |d: Div| {
+                d
+                    // Runner divider (draggable)
+                    .child(
+                        div()
+                            .id("runner-divider")
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .w_full()
+                            .h(px(5.))
+                            .flex_shrink_0()
+                            .when(runner_expanded, |d: Stateful<Div>| {
+                                d.cursor(CursorStyle::ResizeUpDown)
+                                    .hover(|d| d.bg(colors::blue()))
+                                    .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, _window, cx| {
+                                        let y: f32 = ev.position.y.into();
+                                        this.dragging_runner = true;
+                                        this.drag_start_y = y;
+                                        this.drag_start_height = this.runner_height;
+                                        cx.notify();
+                                    }))
+                            })
+                            .child(div().w_full().h(px(1.)).bg(colors::surface1())),
+                    )
+                    // Runner header + content
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .w_full()
+                            .when(runner_expanded, |d: Div| d.h(px(runner_height)).min_h(px(100.)))
+                            .child(
+                                div()
+                                    .id("runner-header")
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .w_full()
+                                    .h(px(28.))
+                                    .min_h(px(28.))
+                                    .flex_shrink_0()
+                                    .px(px(8.))
+                                    .cursor_pointer()
+                                    .hover(|d| d.bg(colors::surface0()))
+                                    .text_sm()
+                                    .text_color(colors::subtext())
+                                    .child(if runner_expanded { "▼ " } else { "▲ " })
+                                    .child("Runner")
+                                    .on_click(cx.listener(|this, _ev, _window, cx| {
+                                        this.runner_expanded = !this.runner_expanded;
+                                        cx.emit(RightPanelEvent::LayoutChanged);
+                                        cx.notify();
+                                    })),
+                            )
+                            .when(runner_expanded, |d: Div| {
+                                d.child(
+                                    div()
+                                        .flex_1()
+                                        .w_full()
+                                        .overflow_hidden()
+                                        .when_some(
+                                            self.runner_terminal.clone(),
+                                            |d: Div, terminal| d.child(terminal),
+                                        ),
+                                )
+                            }),
+                    )
+            })
             // ── Git Log divider (draggable) ────────────────
             .child(
                 div()
@@ -576,6 +625,7 @@ struct ProjectState {
     _right_panel_sub: Subscription,
     _file_explorer_sub: Subscription,
     _git_changes_sub: Subscription,
+    _git_log_sub: Subscription,
 }
 
 // ── AppView ──────────────────────────────────────────────────
@@ -590,9 +640,147 @@ struct AppView {
     update_status: Option<(u8, String)>,
     settings_open: bool,
     wallpaper_path: Option<String>,
+    wallpaper_opacity: f32,
+    wallpaper_crop_x: f32,
+    wallpaper_crop_y: f32,
+    wallpaper_img_size: Option<(u32, u32)>,
+    crop_picker_open: bool,
+    crop_drag_start: Option<(f32, f32)>,
+    crop_drag_initial: (f32, f32),
     _project_subscription: Subscription,
     _workspace_subscription: Subscription,
     _update_task: Task<()>,
+}
+
+/// Read image dimensions from PNG/JPEG file headers
+fn image_dimensions(path: &std::path::Path) -> Option<(u32, u32)> {
+    let data = std::fs::read(path).ok()?;
+    if data.len() < 24 { return None; }
+
+    // PNG: magic 89 50 4E 47, IHDR at offset 16
+    if data.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+        let w = u32::from_be_bytes([data[16], data[17], data[18], data[19]]);
+        let h = u32::from_be_bytes([data[20], data[21], data[22], data[23]]);
+        return Some((w, h));
+    }
+
+    // JPEG: magic FF D8, scan for SOF marker
+    if data.starts_with(&[0xFF, 0xD8]) {
+        let mut i = 2;
+        while i + 9 < data.len() {
+            if data[i] != 0xFF { i += 1; continue; }
+            let marker = data[i + 1];
+            if (0xC0..=0xC2).contains(&marker) {
+                let h = u16::from_be_bytes([data[i + 5], data[i + 6]]) as u32;
+                let w = u16::from_be_bytes([data[i + 7], data[i + 8]]) as u32;
+                return Some((w, h));
+            }
+            if marker == 0xD9 || marker == 0xDA { break; }
+            let len = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
+            i += 2 + len;
+        }
+    }
+
+    None
+}
+
+/// Read EXIF orientation tag from a JPEG file (returns 1 if not found or not JPEG)
+fn read_exif_orientation(path: &std::path::Path) -> u16 {
+    let data = match std::fs::read(path) {
+        Ok(d) => d,
+        Err(_) => return 1,
+    };
+    if !data.starts_with(&[0xFF, 0xD8]) { return 1; }
+
+    let mut i = 2;
+    while i + 4 < data.len() {
+        if data[i] != 0xFF { i += 1; continue; }
+        let marker = data[i + 1];
+        if i + 4 > data.len() { break; }
+        let len = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
+
+        if marker == 0xE1 && i + 10 < data.len() && &data[i + 4..i + 10] == b"Exif\0\0" {
+            let tiff = &data[i + 10..];
+            if tiff.len() < 8 { return 1; }
+            let le = tiff[0..2] == *b"II";
+            let r16 = |o: usize| -> u16 {
+                if o + 2 > tiff.len() { return 0; }
+                if le { u16::from_le_bytes([tiff[o], tiff[o + 1]]) }
+                else { u16::from_be_bytes([tiff[o], tiff[o + 1]]) }
+            };
+            let ifd = if le {
+                u32::from_le_bytes([tiff[4], tiff[5], tiff[6], tiff[7]])
+            } else {
+                u32::from_be_bytes([tiff[4], tiff[5], tiff[6], tiff[7]])
+            } as usize;
+            if ifd + 2 > tiff.len() { return 1; }
+            let count = r16(ifd) as usize;
+            for e in 0..count {
+                let off = ifd + 2 + e * 12;
+                if off + 12 > tiff.len() { break; }
+                if r16(off) == 0x0112 { return r16(off + 8); }
+            }
+            return 1;
+        }
+        if marker == 0xDA { break; }
+        i += 2 + len;
+    }
+    1
+}
+
+/// Fix JPEG orientation using macOS sips, returns path to corrected file (or original if no fix needed)
+fn fix_image_orientation(path: &std::path::Path) -> PathBuf {
+    let ext = path.extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if ext != "jpg" && ext != "jpeg" {
+        return path.to_path_buf();
+    }
+
+    let orientation = read_exif_orientation(path);
+    if orientation <= 1 || orientation > 8 {
+        return path.to_path_buf();
+    }
+
+    let home = match std::env::var("HOME") {
+        Ok(h) => h,
+        Err(_) => return path.to_path_buf(),
+    };
+    let cache_dir = PathBuf::from(&home).join(".forge").join("wallpaper-cache");
+    let _ = std::fs::create_dir_all(&cache_dir);
+
+    let filename = path.file_name().unwrap_or_default();
+    let cache_path = cache_dir.join(filename);
+    if std::fs::copy(path, &cache_path).is_err() {
+        return path.to_path_buf();
+    }
+
+    let cache_str = cache_path.to_string_lossy().to_string();
+
+    // sips --rotate uses clockwise degrees
+    match orientation {
+        2 => { let _ = std::process::Command::new("sips").args(["--flip", "horizontal", &cache_str]).output(); }
+        3 => { let _ = std::process::Command::new("sips").args(["--rotate", "180", &cache_str]).output(); }
+        4 => { let _ = std::process::Command::new("sips").args(["--flip", "vertical", &cache_str]).output(); }
+        5 => {
+            let _ = std::process::Command::new("sips").args(["--rotate", "270", &cache_str]).output();
+            let _ = std::process::Command::new("sips").args(["--flip", "horizontal", &cache_str]).output();
+        }
+        6 => { let _ = std::process::Command::new("sips").args(["--rotate", "90", &cache_str]).output(); }
+        7 => {
+            let _ = std::process::Command::new("sips").args(["--rotate", "90", &cache_str]).output();
+            let _ = std::process::Command::new("sips").args(["--flip", "horizontal", &cache_str]).output();
+        }
+        8 => { let _ = std::process::Command::new("sips").args(["--rotate", "270", &cache_str]).output(); }
+        _ => {}
+    }
+
+    // Reset EXIF orientation tag
+    let _ = std::process::Command::new("sips")
+        .args(["--setProperty", "orientation", "1", &cache_str])
+        .output();
+
+    cache_path
 }
 
 impl AppView {
@@ -659,15 +847,47 @@ impl AppView {
 
     fn apply_theme(&mut self, name: ThemeName, cx: &mut Context<Self>) {
         theme::set_theme(name);
-        settings::save(name, self.wallpaper_path.as_deref());
+        self.save_settings();
         self.notify_all(cx);
     }
 
     fn apply_wallpaper(&mut self, path: Option<String>, cx: &mut Context<Self>) {
-        theme::set_wallpaper(path.clone());
-        self.wallpaper_path = path;
-        settings::save(theme::current_name(), self.wallpaper_path.as_deref());
+        if let Some(p) = path {
+            // Fix EXIF orientation (creates corrected copy if needed)
+            let fixed = fix_image_orientation(std::path::Path::new(&p));
+            let fixed_str = fixed.to_string_lossy().to_string();
+
+            theme::set_wallpaper(Some(fixed_str.clone()));
+            self.wallpaper_img_size = image_dimensions(&fixed);
+            self.wallpaper_path = Some(fixed_str);
+            self.crop_picker_open = true;
+            self.wallpaper_crop_x = 0.5;
+            self.wallpaper_crop_y = 0.5;
+        } else {
+            theme::set_wallpaper(None);
+            self.wallpaper_img_size = None;
+            self.wallpaper_path = None;
+            self.crop_picker_open = false;
+        }
+        self.save_settings();
         self.notify_all(cx);
+    }
+
+    fn apply_wallpaper_opacity(&mut self, opacity: f32, cx: &mut Context<Self>) {
+        self.wallpaper_opacity = opacity;
+        theme::set_wallpaper_opacity(opacity);
+        self.save_settings();
+        self.notify_all(cx);
+    }
+
+    fn save_settings(&self) {
+        settings::save(
+            theme::current_name(),
+            self.wallpaper_path.as_deref(),
+            self.wallpaper_opacity,
+            self.wallpaper_crop_x,
+            self.wallpaper_crop_y,
+        );
     }
 
     fn open_file_in_pane(&mut self, pane: &Entity<Pane>, path: PathBuf, cx: &mut Context<Self>) {
@@ -686,17 +906,7 @@ impl AppView {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "file".to_string());
 
-        let ext = path.extension()
-            .map(|e| e.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let icon = match ext.as_str() {
-            "rs" => "⚙ ",
-            "ts" | "tsx" | "js" | "jsx" => "◇ ",
-            "json" | "toml" | "yaml" | "yml" => "{ ",
-            "md" | "txt" => "¶ ",
-            "css" | "scss" => "# ",
-            _ => "□ ",
-        };
+        let icon = "crates/app/assets/file.svg";
 
         let detail = path.to_string_lossy().to_string();
         let file_view = cx.new(|cx| FileView::new(path, cx));
@@ -748,7 +958,7 @@ impl AppView {
                         let detail = shorten_path(&project_path);
                         let terminal_view = cx.new(|cx| TerminalView::new_in(title.clone(), Some(project_path), cx));
                         let tab_id = this.project_states[idx].pane.update(cx, |pane, _cx| {
-                            pane.add_tab(title, "> ", detail, AnyView::from(terminal_view.clone()), true)
+                            pane.add_tab(title, "crates/app/assets/terminal.svg", detail, AnyView::from(terminal_view.clone()), true)
                         });
                         // Subscribe to OSC title changes
                         let pane_entity = this.project_states[idx].pane.clone();
@@ -778,7 +988,7 @@ impl AppView {
         let term_title = format!("zsh {}", self.terminal_count);
         let terminal_view = cx.new(|cx| TerminalView::new_in(term_title.clone(), Some(project_path), cx));
         let tab_id = pane.update(cx, |p, _cx| {
-            p.add_tab(term_title, "> ", detail, AnyView::from(terminal_view.clone()), true)
+            p.add_tab(term_title, "crates/app/assets/terminal.svg", detail, AnyView::from(terminal_view.clone()), true)
         });
         // Subscribe to OSC title changes
         let pane_for_title = pane.clone();
@@ -898,6 +1108,24 @@ impl AppView {
             }
         });
 
+        // Subscribe to commit click events from git log
+        let git_log_entity = right_panel.read(cx).git_log.clone();
+        let pane_for_gl = pane.clone();
+        let project_path_for_gl = path.clone();
+        let git_log_sub = cx.subscribe(&git_log_entity, move |_this: &mut AppView, _gl, event: &GitLogEvent, cx| {
+            match event {
+                GitLogEvent::CommitClicked { hash, message } => {
+                    let title = format!("{}", &hash[..7.min(hash.len())]);
+                    let detail = format!("commit:{}", hash);
+                    let diff_view = cx.new(|_cx| CommitDiffView::new(&project_path_for_gl, hash, message));
+                    pane_for_gl.update(cx, |p, _cx| {
+                        p.add_tab(title, "crates/app/assets/git-commit.svg", detail, AnyView::from(diff_view), true);
+                    });
+                    cx.notify();
+                }
+            }
+        });
+
         let state = ProjectState {
             path,
             pane,
@@ -908,6 +1136,7 @@ impl AppView {
             _right_panel_sub: right_panel_sub,
             _file_explorer_sub: file_explorer_sub,
             _git_changes_sub: git_changes_sub,
+            _git_log_sub: git_log_sub,
         };
 
         self.project_states.push(state);
@@ -958,7 +1187,7 @@ impl AppView {
 }
 
 impl Render for AppView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Update layout dimensions global so terminals can compute their actual size
         {
             let ws = self.workspace.read(cx);
@@ -974,18 +1203,62 @@ impl Render for AppView {
 
         let mut base = div().size_full();
 
-        // Wallpaper layer
+        // Wallpaper layer with crop positioning
         if let Some(ref wp) = self.wallpaper_path {
             let path = std::path::PathBuf::from(wp);
             if path.exists() {
-                base = base.child(
-                    img(path)
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full()
-                        .object_fit(ObjectFit::Cover)
-                );
+                let crop_x = self.wallpaper_crop_x;
+                let crop_y = self.wallpaper_crop_y;
+
+                if let Some((img_w, img_h)) = self.wallpaper_img_size {
+                    let win_bounds = window.bounds();
+                    let win_w: f32 = win_bounds.size.width.into();
+                    let win_h: f32 = win_bounds.size.height.into();
+
+                    // Scale to cover
+                    let scale_x = win_w / img_w as f32;
+                    let scale_y = win_h / img_h as f32;
+                    let scale = scale_x.max(scale_y);
+                    let scaled_w = img_w as f32 * scale;
+                    let scaled_h = img_h as f32 * scale;
+
+                    // Offset based on crop position
+                    let offset_x = (scaled_w - win_w) * crop_x;
+                    let offset_y = (scaled_h - win_h) * crop_y;
+
+                    base = base.child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full()
+                            .overflow_hidden()
+                            .opacity(1.0 - self.wallpaper_opacity)
+                            .child(
+                                img(path)
+                                    .absolute()
+                                    .left(px(-offset_x))
+                                    .top(px(-offset_y))
+                                    .w(px(scaled_w))
+                                    .h(px(scaled_h))
+                            )
+                    );
+                } else {
+                    // Fallback: no dimensions known, use cover
+                    base = base.child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full()
+                            .opacity(1.0 - self.wallpaper_opacity)
+                            .child(
+                                img(path)
+                                    .size_full()
+                                    .object_fit(ObjectFit::Cover)
+                            )
+                    );
+                }
             }
         }
 
@@ -1040,6 +1313,198 @@ impl Render for AppView {
             );
         }
 
+        // Crop picker overlay
+        if self.crop_picker_open {
+            if let (Some(ref wp), Some((img_w, img_h))) = (&self.wallpaper_path, self.wallpaper_img_size) {
+                let win_bounds = window.bounds();
+                let win_w: f32 = win_bounds.size.width.into();
+                let win_h: f32 = win_bounds.size.height.into();
+                let img_w = img_w as f32;
+                let img_h = img_h as f32;
+
+                // Preview area: 80% of window, centered
+                let preview_w = win_w * 0.80;
+                let preview_h = win_h * 0.70;
+
+                // Scale image to fit in preview
+                let img_scale = (preview_w / img_w).min(preview_h / img_h);
+                let disp_w = img_w * img_scale;
+                let disp_h = img_h * img_scale;
+
+                // Screen frame: what portion of the image is visible at cover scale
+                let cover_scale = (win_w / img_w).max(win_h / img_h);
+                let visible_w = win_w / cover_scale; // in image pixels
+                let visible_h = win_h / cover_scale;
+                let frame_w = visible_w * img_scale;
+                let frame_h = visible_h * img_scale;
+
+                // Frame position within displayed image
+                let range_x = (disp_w - frame_w).max(0.0);
+                let range_y = (disp_h - frame_h).max(0.0);
+                let frame_x = self.wallpaper_crop_x * range_x;
+                let frame_y = self.wallpaper_crop_y * range_y;
+
+                // Image offset within preview area (centered)
+                let img_offset_x = (preview_w - disp_w) / 2.0;
+                let img_offset_y = (preview_h - disp_h) / 2.0;
+
+                let crop_x = self.wallpaper_crop_x;
+                let crop_y = self.wallpaper_crop_y;
+                let path = std::path::PathBuf::from(wp);
+
+                base = base.child(
+                    div()
+                        .id("crop-picker-overlay")
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .bg(rgba(0x000000ee))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(20.))
+                        // Title
+                        .child(
+                            div()
+                                .text_size(px(16.))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(colors::text())
+                                .child("Position your wallpaper"),
+                        )
+                        // Preview area with image + frame
+                        .child(
+                            div()
+                                .id("crop-preview")
+                                .relative()
+                                .w(px(preview_w))
+                                .h(px(preview_h))
+                                .overflow_hidden()
+                                .cursor(CursorStyle::Crosshair)
+                                // Full image
+                                .child(
+                                    img(path)
+                                        .absolute()
+                                        .left(px(img_offset_x))
+                                        .top(px(img_offset_y))
+                                        .w(px(disp_w))
+                                        .h(px(disp_h))
+                                )
+                                // Dark overlay on top of image (outside frame area)
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .left(px(img_offset_x))
+                                        .top(px(img_offset_y))
+                                        .w(px(disp_w))
+                                        .h(px(disp_h))
+                                        .bg(rgba(0x00000088))
+                                )
+                                // Bright frame (the visible crop area)
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .left(px(img_offset_x + frame_x))
+                                        .top(px(img_offset_y + frame_y))
+                                        .w(px(frame_w))
+                                        .h(px(frame_h))
+                                        .border_2()
+                                        .border_color(colors::blue())
+                                        .overflow_hidden()
+                                        // Show the image portion inside the frame (bright, no overlay)
+                                        .child(
+                                            img(std::path::PathBuf::from(self.wallpaper_path.as_ref().unwrap()))
+                                                .absolute()
+                                                .left(px(-frame_x))
+                                                .top(px(-frame_y))
+                                                .w(px(disp_w))
+                                                .h(px(disp_h))
+                                        )
+                                )
+                                // Drag handling on the preview area
+                                .on_mouse_down(MouseButton::Left, cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
+                                    let mx: f32 = ev.position.x.into();
+                                    let my: f32 = ev.position.y.into();
+                                    this.crop_drag_start = Some((mx, my));
+                                    this.crop_drag_initial = (this.wallpaper_crop_x, this.wallpaper_crop_y);
+                                    cx.notify();
+                                }))
+                                .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _window, cx| {
+                                    if let Some((start_x, start_y)) = this.crop_drag_start {
+                                        let mx: f32 = ev.position.x.into();
+                                        let my: f32 = ev.position.y.into();
+                                        let dx = mx - start_x;
+                                        let dy = my - start_y;
+                                        let (init_x, init_y) = this.crop_drag_initial;
+
+                                        let new_x = if range_x > 0.0 {
+                                            (init_x + dx / range_x).clamp(0.0, 1.0)
+                                        } else { 0.5 };
+                                        let new_y = if range_y > 0.0 {
+                                            (init_y + dy / range_y).clamp(0.0, 1.0)
+                                        } else { 0.5 };
+
+                                        this.wallpaper_crop_x = new_x;
+                                        this.wallpaper_crop_y = new_y;
+                                        cx.notify();
+                                    }
+                                }))
+                                .on_mouse_up(MouseButton::Left, cx.listener(|this, _ev: &MouseUpEvent, _window, cx| {
+                                    this.crop_drag_start = None;
+                                    cx.notify();
+                                })),
+                        )
+                        // Buttons
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .gap(px(12.))
+                                .child(
+                                    div()
+                                        .id("crop-confirm")
+                                        .px(px(20.))
+                                        .py(px(8.))
+                                        .rounded(px(6.))
+                                        .cursor_pointer()
+                                        .bg(colors::blue())
+                                        .text_sm()
+                                        .text_color(colors::base())
+                                        .font_weight(FontWeight::BOLD)
+                                        .hover(|d| d.opacity(0.85))
+                                        .child("Confirm")
+                                        .on_click(cx.listener(|this, _ev, _window, cx| {
+                                            this.crop_picker_open = false;
+                                            this.save_settings();
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .id("crop-cancel")
+                                        .px(px(20.))
+                                        .py(px(8.))
+                                        .rounded(px(6.))
+                                        .cursor_pointer()
+                                        .bg(colors::surface1())
+                                        .text_sm()
+                                        .text_color(colors::text())
+                                        .hover(|d| d.opacity(0.85))
+                                        .child("Cancel")
+                                        .on_click(cx.listener(|this, _ev, _window, cx| {
+                                            this.crop_picker_open = false;
+                                            this.wallpaper_crop_x = 0.5;
+                                            this.wallpaper_crop_y = 0.5;
+                                            this.save_settings();
+                                            cx.notify();
+                                        })),
+                                ),
+                        ),
+                );
+            }
+        }
+
         if self.settings_open {
             let current = theme::current_name();
             base = base.child(
@@ -1063,8 +1528,8 @@ impl Render for AppView {
                             .id("settings-panel")
                             .flex()
                             .flex_col()
-                            .w(px(420.))
-                            .max_h(px(500.))
+                            .w(px(500.))
+                            .max_h(px(700.))
                             .bg(colors::mantle())
                             .border_1()
                             .border_color(colors::surface1())
@@ -1255,28 +1720,105 @@ impl Render for AppView {
                                                     .child(
                                                         self.wallpaper_path
                                                             .as_ref()
-                                                            .map(|p| shorten_path(&PathBuf::from(p)))
+                                                            .map(|p| PathBuf::from(p).file_name()
+                                                                .map(|n| n.to_string_lossy().to_string())
+                                                                .unwrap_or_else(|| p.clone()))
                                                             .unwrap_or_else(|| "None".to_string())
                                                     ),
                                             ),
                                     )
                                     .when(self.wallpaper_path.is_some(), |d: Div| {
-                                        d.child(
-                                            div()
-                                                .id("remove-wallpaper")
-                                                .px(px(12.))
-                                                .py(px(6.))
-                                                .rounded(px(6.))
-                                                .cursor_pointer()
-                                                .bg(colors::surface0())
-                                                .text_sm()
-                                                .text_color(colors::red())
-                                                .hover(|d| d.bg(colors::surface1()))
-                                                .child("Remove Wallpaper")
-                                                .on_click(cx.listener(|this, _ev, _window, cx| {
-                                                    this.apply_wallpaper(None, cx);
-                                                })),
-                                        )
+                                        let opacity = self.wallpaper_opacity;
+                                        let pct = format!("{}%", (opacity * 100.0).round() as u32);
+                                        let slider_fill = opacity as f64;
+                                        d
+                                            // Opacity slider: [ - ] ████░░░░ [ + ]  80%
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .flex_row()
+                                                    .items_center()
+                                                    .gap(px(8.))
+                                                    .child(
+                                                        div()
+                                                            .text_sm()
+                                                            .text_color(colors::subtext())
+                                                            .child("Opacity"),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .id("opacity-minus")
+                                                            .px(px(8.))
+                                                            .py(px(4.))
+                                                            .rounded(px(6.))
+                                                            .cursor_pointer()
+                                                            .bg(colors::surface0())
+                                                            .text_sm()
+                                                            .text_color(colors::text())
+                                                            .hover(|d| d.bg(colors::surface1()))
+                                                            .child("\u{2212}") // minus sign
+                                                            .on_click(cx.listener(move |this, _ev, _window, cx| {
+                                                                let new_val = (opacity - 0.05).max(0.0);
+                                                                this.apply_wallpaper_opacity(new_val, cx);
+                                                            })),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .id("opacity-slider")
+                                                            .flex_1()
+                                                            .h(px(6.))
+                                                            .rounded(px(3.))
+                                                            .bg(colors::surface1())
+                                                            .child(
+                                                                div()
+                                                                    .h_full()
+                                                                    .rounded(px(3.))
+                                                                    .bg(colors::blue())
+                                                                    .w(relative(slider_fill as f32)),
+                                                            ),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .id("opacity-plus")
+                                                            .px(px(8.))
+                                                            .py(px(4.))
+                                                            .rounded(px(6.))
+                                                            .cursor_pointer()
+                                                            .bg(colors::surface0())
+                                                            .text_sm()
+                                                            .text_color(colors::text())
+                                                            .hover(|d| d.bg(colors::surface1()))
+                                                            .child("+")
+                                                            .on_click(cx.listener(move |this, _ev, _window, cx| {
+                                                                let new_val = (opacity + 0.05).min(1.0);
+                                                                this.apply_wallpaper_opacity(new_val, cx);
+                                                            })),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_sm()
+                                                            .text_color(colors::text())
+                                                            .w(px(36.))
+                                                            .child(pct),
+                                                    ),
+                                            )
+                                            // Remove wallpaper button
+                                            .child(
+                                                div()
+                                                    .id("remove-wallpaper")
+                                                    .px(px(12.))
+                                                    .py(px(6.))
+                                                    .rounded(px(6.))
+                                                    .cursor_pointer()
+                                                    .bg(colors::surface0())
+                                                    .text_sm()
+                                                    .text_color(colors::red())
+                                                    .hover(|d| d.bg(colors::surface1()))
+                                                    .child("Remove Wallpaper")
+                                                    .on_click(cx.listener(|this, _ev, _window, cx| {
+                                                        this.apply_wallpaper(None, cx);
+                                                    })),
+                                            )
                                     }),
                             ),
                     ),
@@ -1289,10 +1831,29 @@ impl Render for AppView {
 
 // ── Main ─────────────────────────────────────────────────────
 
+/// Asset source that embeds SVG icons at compile time
+struct EmbeddedAssets;
+
+impl AssetSource for EmbeddedAssets {
+    fn load(&self, path: &str) -> gpui::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        match path {
+            "crates/app/assets/terminal.svg" => Ok(Some(std::borrow::Cow::Borrowed(include_bytes!("../assets/terminal.svg")))),
+            "crates/app/assets/file.svg" => Ok(Some(std::borrow::Cow::Borrowed(include_bytes!("../assets/file.svg")))),
+            "crates/app/assets/folder.svg" => Ok(Some(std::borrow::Cow::Borrowed(include_bytes!("../assets/folder.svg")))),
+            "crates/app/assets/git-commit.svg" => Ok(Some(std::borrow::Cow::Borrowed(include_bytes!("../assets/git-commit.svg")))),
+            _ => Ok(None),
+        }
+    }
+
+    fn list(&self, _path: &str) -> gpui::Result<Vec<SharedString>> {
+        Ok(vec![])
+    }
+}
+
 fn main() {
     env_logger::init();
 
-    Application::new().run(|cx: &mut App| {
+    Application::new().with_assets(EmbeddedAssets).run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(1400.), px(900.)), cx);
 
         cx.open_window(
@@ -1535,6 +2096,11 @@ fn main() {
                     let saved_settings = settings::load();
                     theme::set_theme(saved_settings.theme);
                     theme::set_wallpaper(saved_settings.wallpaper.clone());
+                    theme::set_wallpaper_opacity(saved_settings.wallpaper_opacity);
+
+                    // Load image dimensions if wallpaper is set
+                    let wallpaper_img_size = saved_settings.wallpaper.as_ref()
+                        .and_then(|p| image_dimensions(std::path::Path::new(p)));
 
                     let mut app_view = AppView {
                         workspace,
@@ -1546,6 +2112,13 @@ fn main() {
                         update_status: None,
                         settings_open: false,
                         wallpaper_path: saved_settings.wallpaper,
+                        wallpaper_opacity: saved_settings.wallpaper_opacity,
+                        wallpaper_crop_x: saved_settings.wallpaper_crop_x,
+                        wallpaper_crop_y: saved_settings.wallpaper_crop_y,
+                        wallpaper_img_size,
+                        crop_picker_open: false,
+                        crop_drag_start: None,
+                        crop_drag_initial: (0.5, 0.5),
                         _project_subscription: project_sub,
                         _workspace_subscription: workspace_sub,
                         _update_task: update_task,

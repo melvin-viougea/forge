@@ -97,6 +97,148 @@ fn generate_diff(root: &Path, file_path: &Path) -> Vec<DiffLine> {
     diff_lines
 }
 
+// ── Commit Diff View (full diff for a single commit) ────────
+
+pub struct CommitDiffView {
+    hash: String,
+    message: String,
+    lines: Vec<DiffLine>,
+}
+
+impl CommitDiffView {
+    pub fn new(root_path: &Path, hash: &str, message: &str) -> Self {
+        let lines = generate_commit_diff(root_path, hash);
+        Self {
+            hash: hash.to_string(),
+            message: message.to_string(),
+            lines,
+        }
+    }
+}
+
+fn generate_commit_diff(root: &Path, hash: &str) -> Vec<DiffLine> {
+    let mut diff_lines = Vec::new();
+
+    let repo = match git2::Repository::discover(root) {
+        Ok(r) => r,
+        Err(_) => return diff_lines,
+    };
+
+    let commit = match repo.revparse_single(hash).and_then(|o| o.peel_to_commit()) {
+        Ok(c) => c,
+        Err(_) => return diff_lines,
+    };
+
+    let tree = match commit.tree() {
+        Ok(t) => t,
+        Err(_) => return diff_lines,
+    };
+
+    let parent_tree = commit.parents().next().and_then(|p| p.tree().ok());
+
+    let diff = match repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None) {
+        Ok(d) => d,
+        Err(_) => return diff_lines,
+    };
+
+    diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
+        let content = String::from_utf8_lossy(line.content()).to_string();
+        let kind = match line.origin() {
+            '+' => DiffLineKind::Addition,
+            '-' => DiffLineKind::Deletion,
+            'H' | 'F' => DiffLineKind::Hunk,
+            _ => DiffLineKind::Context,
+        };
+        diff_lines.push(DiffLine {
+            kind,
+            content,
+            old_line: line.old_lineno(),
+            new_line: line.new_lineno(),
+        });
+        true
+    }).ok();
+
+    diff_lines
+}
+
+impl Render for CommitDiffView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .id("commit-diff-scroll")
+            .overflow_y_scroll()
+            .text_sm()
+            .font_family("Berkeley Mono, SF Mono, Menlo, monospace")
+            // Header
+            .child(
+                div()
+                    .px(px(8.))
+                    .py(px(6.))
+                    .border_b_1()
+                    .border_color(colors::surface1())
+                    .flex()
+                    .flex_row()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .text_color(colors::blue())
+                            .child(self.hash.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_color(colors::text())
+                            .truncate()
+                            .child(self.message.clone()),
+                    ),
+            )
+            // Diff lines
+            .children(self.lines.iter().map(|line| {
+                let (bg, text_color, prefix) = match line.kind {
+                    DiffLineKind::Addition => (Some(rgb(0x0d2818)), colors::green(), "+"),
+                    DiffLineKind::Deletion => (Some(rgb(0x2d1214)), colors::red(), "-"),
+                    DiffLineKind::Hunk => (Some(colors::surface0()), colors::overlay(), "@"),
+                    DiffLineKind::Context => (None, colors::text(), " "),
+                };
+
+                let line_num = match (&line.old_line, &line.new_line) {
+                    (Some(old), Some(new)) => format!("{:>4} {:>4}", old, new),
+                    (Some(old), None) => format!("{:>4}     ", old),
+                    (None, Some(new)) => format!("     {:>4}", new),
+                    _ => "         ".to_string(),
+                };
+
+                div()
+                    .flex()
+                    .flex_row()
+                    .w_full()
+                    .h(px(18.))
+                    .when_some(bg, |d: Div, bg_color| d.bg(bg_color))
+                    .child(
+                        div()
+                            .w(px(72.))
+                            .text_color(colors::overlay())
+                            .px(px(4.))
+                            .child(line_num),
+                    )
+                    .child(
+                        div()
+                            .w(px(12.))
+                            .text_color(text_color)
+                            .child(prefix),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_color(text_color)
+                            .child(line.content.clone()),
+                    )
+            }))
+    }
+}
+
 impl Render for DiffView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()

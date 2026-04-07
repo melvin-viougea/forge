@@ -158,7 +158,7 @@ impl FileExplorerPanel {
             GitFileStatus::Added => " A",
             GitFileStatus::Deleted => " D",
             GitFileStatus::Renamed => " R",
-            GitFileStatus::Untracked => " ?",
+            GitFileStatus::Untracked => " A",
             GitFileStatus::Clean => "",
         }
     }
@@ -294,7 +294,7 @@ impl Render for FileExplorerPanel {
                         let is_selected = self.selected_index == Some(idx);
                         let status_color = Self::status_color(&entry.git_status);
                         let status_text = Self::status_indicator(&entry.git_status);
-                        let icon = entry.icon();
+                        let icon_svg = entry.icon_svg();
                         let name = entry.name.clone();
 
                         div()
@@ -302,6 +302,7 @@ impl Render for FileExplorerPanel {
                             .flex()
                             .flex_row()
                             .items_center()
+                            .gap(px(4.))
                             .w_full()
                             .h(px(22.))
                             .pl(px(8. + indent))
@@ -310,9 +311,10 @@ impl Render for FileExplorerPanel {
                             .when(is_selected, |d: Stateful<Div>| d.bg(colors::surface0()))
                             .hover(|d| d.bg(colors::surface0()))
                             .child(
-                                div()
-                                    .text_color(colors::overlay())
-                                    .child(icon),
+                                svg()
+                                    .path(icon_svg)
+                                    .size(px(14.))
+                                    .text_color(colors::subtext()),
                             )
                             .child(
                                 div()

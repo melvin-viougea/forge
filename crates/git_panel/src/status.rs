@@ -25,7 +25,7 @@ impl ChangeStatus {
             ChangeStatus::Added => "A",
             ChangeStatus::Deleted => "D",
             ChangeStatus::Renamed => "R",
-            ChangeStatus::Untracked => "?",
+            ChangeStatus::Untracked => "A",
         }
     }
 }

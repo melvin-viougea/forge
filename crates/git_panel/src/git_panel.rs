@@ -365,7 +365,7 @@ fn render_change_entry(
         .flex_row()
         .items_center()
         .w_full()
-        .h(px(30.))
+        .h(px(22.))
         .px(px(8.))
         .cursor_pointer()
         .when(is_selected, |d: Stateful<Div>| d.bg(colors::surface0()))
@@ -434,6 +434,12 @@ fn render_change_entry(
 
 // ── Git Log Panel ───────────────────────────────────────────
 
+pub enum GitLogEvent {
+    CommitClicked { hash: String, message: String },
+}
+
+impl gpui::EventEmitter<GitLogEvent> for GitLogPanel {}
+
 pub struct GitLogPanel {
     root_path: PathBuf,
     commits: Vec<GitCommit>,
@@ -474,7 +480,8 @@ impl GitLogPanel {
 }
 
 impl Render for GitLogPanel {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let commits: Vec<_> = self.commits.iter().map(|c| (c.hash.clone(), c.message.clone(), c.time_ago.clone())).collect();
         div()
             .flex()
             .flex_col()
@@ -484,14 +491,22 @@ impl Render for GitLogPanel {
             .text_xs()
             .font_family("Berkeley Mono, SF Mono, Menlo, monospace")
             .children(
-                self.commits.iter().enumerate().map(|(idx, commit)| {
-                    render_commit_entry(idx, commit)
+                commits.into_iter().enumerate().map(|(idx, (hash, message, time_ago))| {
+                    let h = hash.clone();
+                    let m = message.clone();
+                    render_commit_entry(idx, &hash, &message, &time_ago)
+                        .on_click(cx.listener(move |_this, _ev, _window, cx| {
+                            cx.emit(GitLogEvent::CommitClicked {
+                                hash: h.clone(),
+                                message: m.clone(),
+                            });
+                        }))
                 }),
             )
     }
 }
 
-fn render_commit_entry(idx: usize, commit: &GitCommit) -> Stateful<Div> {
+fn render_commit_entry(idx: usize, hash: &str, message: &str, time_ago: &str) -> Stateful<Div> {
     div()
         .id(ElementId::Name(format!("commit-{}", idx).into()))
         .flex()
@@ -500,6 +515,7 @@ fn render_commit_entry(idx: usize, commit: &GitCommit) -> Stateful<Div> {
         .w_full()
         .h(px(22.))
         .px(px(8.))
+        .cursor_pointer()
         .hover(|d| d.bg(colors::surface0()))
         // Hash
         .child(
@@ -507,7 +523,7 @@ fn render_commit_entry(idx: usize, commit: &GitCommit) -> Stateful<Div> {
                 .flex_shrink_0()
                 .w(px(60.))
                 .text_color(colors::blue())
-                .child(commit.hash.clone()),
+                .child(hash.to_string()),
         )
         // Message (truncated)
         .child(
@@ -516,7 +532,7 @@ fn render_commit_entry(idx: usize, commit: &GitCommit) -> Stateful<Div> {
                 .min_w(px(0.))
                 .truncate()
                 .text_color(colors::text())
-                .child(commit.message.clone()),
+                .child(message.to_string()),
         )
         // Time ago
         .child(
@@ -524,6 +540,6 @@ fn render_commit_entry(idx: usize, commit: &GitCommit) -> Stateful<Div> {
                 .flex_shrink_0()
                 .ml(px(4.))
                 .text_color(colors::overlay())
-                .child(commit.time_ago.clone()),
+                .child(time_ago.to_string()),
         )
 }

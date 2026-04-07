@@ -199,6 +199,7 @@ pub mod theme {
 
     // ── Wallpaper state ──────────────────────────────
     static WALLPAPER: Mutex<Option<String>> = Mutex::new(None);
+    static WALLPAPER_OPACITY: Mutex<f32> = Mutex::new(0.65);
 
     pub fn set_wallpaper(path: Option<String>) {
         *WALLPAPER.lock().unwrap() = path;
@@ -212,16 +213,30 @@ pub mod theme {
         WALLPAPER.lock().unwrap().is_some()
     }
 
+    pub fn set_wallpaper_opacity(opacity: f32) {
+        *WALLPAPER_OPACITY.lock().unwrap() = opacity.clamp(0.0, 1.0);
+    }
+
+    pub fn wallpaper_opacity() -> f32 {
+        *WALLPAPER_OPACITY.lock().unwrap()
+    }
+
     fn translucent(mut color: Rgba, alpha: f32) -> Rgba {
-        if has_wallpaper() { color.a = alpha; }
+        if has_wallpaper() {
+            // wallpaper_opacity: 0 = full wallpaper visible, 1 = fully transparent
+            // At 0: UI panels use their alpha → wallpaper shows through
+            // At 1: UI panels fully opaque → wallpaper hidden
+            let t = wallpaper_opacity();
+            color.a = alpha + (1.0 - alpha) * t;
+        }
         color
     }
 
     // ── Color accessors ─────────────────────────────
-    pub fn base() -> Rgba { translucent(rgb(c().base), 0.75) }
-    pub fn mantle() -> Rgba { translucent(rgb(c().mantle), 0.94) }
-    pub fn surface0() -> Rgba { translucent(rgb(c().surface0), 0.65) }
-    pub fn surface1() -> Rgba { translucent(rgb(c().surface1), 0.65) }
+    pub fn base() -> Rgba { translucent(rgb(c().base), 0.40) }
+    pub fn mantle() -> Rgba { translucent(rgb(c().mantle), 0.55) }
+    pub fn surface0() -> Rgba { translucent(rgb(c().surface0), 0.40) }
+    pub fn surface1() -> Rgba { translucent(rgb(c().surface1), 0.40) }
     pub fn text() -> Rgba { rgb(c().text) }
     pub fn subtext() -> Rgba { rgb(c().subtext) }
     pub fn blue() -> Rgba { rgb(c().blue) }
@@ -234,7 +249,7 @@ pub mod theme {
     pub fn selection() -> Rgba { rgb(c().selection) }
 
     // Translucent variants for wallpaper mode
-    pub fn base_bg() -> Rgba { translucent(base(), 0.55) }
-    pub fn mantle_bg() -> Rgba { translucent(rgb(c().mantle), 0.70) }
-    pub fn surface0_bg() -> Rgba { translucent(surface0(), 0.65) }
+    pub fn base_bg() -> Rgba { translucent(base(), 0.30) }
+    pub fn mantle_bg() -> Rgba { translucent(rgb(c().mantle), 0.45) }
+    pub fn surface0_bg() -> Rgba { translucent(surface0(), 0.40) }
 }
