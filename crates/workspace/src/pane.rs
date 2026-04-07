@@ -162,7 +162,6 @@ impl Pane {
             .min_w(px(self.sidebar_width))
             .h_full()
             .flex_shrink_0()
-            .bg(theme::mantle_bg())
             // New Terminal button
             .child(
                 div()
@@ -362,7 +361,6 @@ impl Render for Pane {
             .flex()
             .flex_row()
             .size_full()
-            .bg(theme::base_bg())
             .when(is_dragging, |d| {
                 d.cursor(CursorStyle::ResizeLeftRight)
             })
@@ -380,29 +378,34 @@ impl Render for Pane {
                     cx.emit(PaneEvent::LayoutChanged);
                 }
             }))
-            .when(has_tabs, |d: Div| {
-                d.child(self.render_sidebar(cx))
-            })
-            // Sidebar divider
+            // Sidebar + divider (single bg to avoid seam)
             .when(has_tabs, |d: Div| {
                 d.child(
                     div()
-                        .id("sidebar-divider")
                         .flex()
-                        .justify_center()
-                        .w(px(5.))
+                        .flex_row()
                         .h_full()
                         .flex_shrink_0()
-                        .cursor(CursorStyle::ResizeLeftRight)
-                        .hover(|d| d.bg(theme::blue()))
-                        .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, _window, cx| {
-                            let x: f32 = ev.position.x.into();
-                            this.dragging_sidebar = true;
-                            this.drag_start_x = x;
-                            this.drag_start_width = this.sidebar_width;
-                            cx.notify();
-                        }))
-                        .child(div().w(px(1.)).h_full().bg(theme::surface1())),
+                        .child(self.render_sidebar(cx))
+                        .child(
+                            div()
+                                .id("sidebar-divider")
+                                .flex()
+                                .justify_center()
+                                .w(px(5.))
+                                .h_full()
+                                .flex_shrink_0()
+                                .cursor(CursorStyle::ResizeLeftRight)
+                                .hover(|d| d.bg(theme::blue()))
+                                .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, _window, cx| {
+                                    let x: f32 = ev.position.x.into();
+                                    this.dragging_sidebar = true;
+                                    this.drag_start_x = x;
+                                    this.drag_start_width = this.sidebar_width;
+                                    cx.notify();
+                                }))
+                                .child(div().w(px(1.)).h_full().bg(theme::surface1())),
+                        ),
                 )
             })
             .child(

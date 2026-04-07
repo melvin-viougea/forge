@@ -414,7 +414,6 @@ impl Render for TerminalView {
             .flex()
             .flex_row()
             .size_full()
-            .bg(colors::base_bg())
             .track_focus(&self.focus_handle)
             // ── Mouse: selection ──────────────────────────────
             .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, window, cx| {

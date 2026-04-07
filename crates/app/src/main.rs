@@ -97,7 +97,6 @@ impl Render for ProjectPanel {
             .flex()
             .flex_col()
             .size_full()
-            .bg(colors::mantle_bg())
             .text_sm()
             // New Workspace button
             .child(
@@ -369,7 +368,6 @@ impl Render for RightPanel {
             .flex()
             .flex_col()
             .size_full()
-            .bg(colors::mantle_bg())
             .when(is_dragging_log, |d| {
                 d.cursor(CursorStyle::ResizeUpDown)
             })
@@ -399,7 +397,6 @@ impl Render for RightPanel {
                     .h(px(30.))
                     .min_h(px(30.))
                     .flex_shrink_0()
-                    .bg(colors::mantle())
                     .border_b_1()
                     .border_color(colors::surface1())
                     // Changes tab
@@ -536,7 +533,6 @@ impl Render for RightPanel {
                             .min_h(px(28.))
                             .flex_shrink_0()
                             .px(px(8.))
-                            .bg(colors::mantle())
                             .cursor_pointer()
                             .hover(|d| d.bg(colors::surface0()))
                             .text_sm()

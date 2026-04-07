@@ -216,10 +216,10 @@ pub mod theme {
     }
 
     // ── Color accessors ─────────────────────────────
-    pub fn base() -> Rgba { rgb(c().base) }
-    pub fn mantle() -> Rgba { rgb(c().mantle) }
-    pub fn surface0() -> Rgba { rgb(c().surface0) }
-    pub fn surface1() -> Rgba { rgb(c().surface1) }
+    pub fn base() -> Rgba { translucent(rgb(c().base), 0.75) }
+    pub fn mantle() -> Rgba { translucent(rgb(c().mantle), 0.94) }
+    pub fn surface0() -> Rgba { translucent(rgb(c().surface0), 0.65) }
+    pub fn surface1() -> Rgba { translucent(rgb(c().surface1), 0.65) }
     pub fn text() -> Rgba { rgb(c().text) }
     pub fn subtext() -> Rgba { rgb(c().subtext) }
     pub fn blue() -> Rgba { rgb(c().blue) }
@@ -233,6 +233,6 @@ pub mod theme {
 
     // Translucent variants for wallpaper mode
     pub fn base_bg() -> Rgba { translucent(base(), 0.55) }
-    pub fn mantle_bg() -> Rgba { translucent(mantle(), 0.60) }
+    pub fn mantle_bg() -> Rgba { translucent(rgb(c().mantle), 0.70) }
     pub fn surface0_bg() -> Rgba { translucent(surface0(), 0.65) }
 }
