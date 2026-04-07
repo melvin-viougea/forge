@@ -29,11 +29,14 @@ pub mod theme {
         pub lavender: u32,
         pub overlay: u32,
         pub selection: u32,
+        pub teal: u32,
+        pub peach: u32,
     }
 
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     pub enum ThemeName {
         ForgeDark,
+        VSCode,
         CatppuccinMocha,
         Nord,
         Dracula,
@@ -44,6 +47,7 @@ pub mod theme {
         pub fn label(&self) -> &'static str {
             match self {
                 Self::ForgeDark => "Forge Dark",
+                Self::VSCode => "Visual Studio Code",
                 Self::CatppuccinMocha => "Catppuccin Mocha",
                 Self::Nord => "Nord",
                 Self::Dracula => "Dracula",
@@ -54,6 +58,7 @@ pub mod theme {
         pub fn as_str(&self) -> &'static str {
             match self {
                 Self::ForgeDark => "forge-dark",
+                Self::VSCode => "vscode",
                 Self::CatppuccinMocha => "catppuccin-mocha",
                 Self::Nord => "nord",
                 Self::Dracula => "dracula",
@@ -64,6 +69,7 @@ pub mod theme {
         pub fn from_str(s: &str) -> Option<Self> {
             match s {
                 "forge-dark" => Some(Self::ForgeDark),
+                "vscode" => Some(Self::VSCode),
                 "catppuccin-mocha" => Some(Self::CatppuccinMocha),
                 "nord" => Some(Self::Nord),
                 "dracula" => Some(Self::Dracula),
@@ -75,6 +81,7 @@ pub mod theme {
         pub fn all() -> &'static [ThemeName] {
             &[
                 Self::ForgeDark,
+                Self::VSCode,
                 Self::CatppuccinMocha,
                 Self::Nord,
                 Self::Dracula,
@@ -85,6 +92,7 @@ pub mod theme {
         pub fn colors(&self) -> ThemeColors {
             match self {
                 Self::ForgeDark => FORGE_DARK,
+                Self::VSCode => VSCODE_DARK,
                 Self::CatppuccinMocha => CATPPUCCIN_MOCHA,
                 Self::Nord => NORD,
                 Self::Dracula => DRACULA,
@@ -100,13 +108,34 @@ pub mod theme {
         surface1: 0x21262d,
         text: 0xc9d1d9,
         subtext: 0x8b949e,
-        blue: 0x58a6ff,
-        green: 0x3fb950,
+        blue: 0x569cd6,
+        green: 0x6a9955,
         red: 0xf85149,
-        yellow: 0xd29922,
-        lavender: 0x79c0ff,
+        yellow: 0xdcdcaa,
+        lavender: 0xc586c0,
         overlay: 0x484f58,
-        selection: 0x1a3050,
+        selection: 0x264f78,
+        teal: 0x4ec9b0,
+        peach: 0xce9178,
+    };
+
+    // VS Code Dark+ — exact colors from the default VS Code dark theme
+    const VSCODE_DARK: ThemeColors = ThemeColors {
+        base: 0x1e1e1e,       // editor.background
+        mantle: 0x181818,     // sideBar.background
+        surface0: 0x252526,   // editorWidget.background
+        surface1: 0x3c3c3c,   // editorGroup.border
+        text: 0xd4d4d4,       // editor.foreground
+        subtext: 0x808080,    // editorLineNumber.foreground
+        blue: 0x569cd6,       // keyword.type / storage
+        green: 0x6a9955,      // comment
+        red: 0xf44747,        // invalid / error
+        yellow: 0xdcdcaa,     // entity.name.function
+        lavender: 0xc586c0,   // keyword.control
+        overlay: 0x5a5a5a,    // editorIndentGuide
+        selection: 0x264f78,  // editor.selectionBackground
+        teal: 0x4ec9b0,       // entity.name.type
+        peach: 0xce9178,      // string
     };
 
     const CATPPUCCIN_MOCHA: ThemeColors = ThemeColors {
@@ -123,6 +152,8 @@ pub mod theme {
         lavender: 0xb4befe,
         overlay: 0x6c7086,
         selection: 0x364060,
+        teal: 0x94e2d5,
+        peach: 0xfab387,
     };
 
     const NORD: ThemeColors = ThemeColors {
@@ -139,6 +170,8 @@ pub mod theme {
         lavender: 0xb48ead,
         overlay: 0x4c566a,
         selection: 0x3b4f6a,
+        teal: 0x8fbcbb,
+        peach: 0xd08770,
     };
 
     const DRACULA: ThemeColors = ThemeColors {
@@ -155,6 +188,8 @@ pub mod theme {
         lavender: 0xbd93f9,
         overlay: 0x6272a4,
         selection: 0x44475a,
+        teal: 0x8be9fd,
+        peach: 0xffb86c,
     };
 
     const ONE_DARK: ThemeColors = ThemeColors {
@@ -171,6 +206,8 @@ pub mod theme {
         lavender: 0xc678dd,
         overlay: 0x4b5263,
         selection: 0x2c3545,
+        teal: 0x56b6c2,
+        peach: 0xd19a66,
     };
 
     struct ThemeState {
@@ -245,6 +282,8 @@ pub mod theme {
     pub fn yellow() -> Rgba { rgb(c().yellow) }
     pub fn lavender() -> Rgba { rgb(c().lavender) }
     pub fn overlay() -> Rgba { rgb(c().overlay) }
+    pub fn teal() -> Rgba { rgb(c().teal) }
+    pub fn peach() -> Rgba { rgb(c().peach) }
     pub fn cursor() -> Rgba { rgb(c().blue) }
     pub fn selection() -> Rgba { rgb(c().selection) }
 
