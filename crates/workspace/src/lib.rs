@@ -6,45 +6,207 @@ pub use dock::*;
 pub use pane::*;
 pub use workspace::*;
 
-// Forge Dark theme — inspired by CMUX / Polyscope
+/// Configurable theme system with presets
 pub mod theme {
     use gpui::rgb;
     use gpui::Rgba;
+    use std::sync::Mutex;
 
-    pub fn base() -> Rgba {
-        rgb(0x0a0e14)
+    #[derive(Clone, Copy)]
+    pub struct ThemeColors {
+        pub base: u32,
+        pub mantle: u32,
+        pub surface0: u32,
+        pub surface1: u32,
+        pub text: u32,
+        pub subtext: u32,
+        pub blue: u32,
+        pub green: u32,
+        pub red: u32,
+        pub yellow: u32,
+        pub lavender: u32,
+        pub overlay: u32,
+        pub selection: u32,
     }
-    pub fn mantle() -> Rgba {
-        rgb(0x0d1117)
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum ThemeName {
+        ForgeDark,
+        CatppuccinMocha,
+        Nord,
+        Dracula,
+        OneDark,
     }
-    pub fn surface0() -> Rgba {
-        rgb(0x161b22)
+
+    impl ThemeName {
+        pub fn label(&self) -> &'static str {
+            match self {
+                Self::ForgeDark => "Forge Dark",
+                Self::CatppuccinMocha => "Catppuccin Mocha",
+                Self::Nord => "Nord",
+                Self::Dracula => "Dracula",
+                Self::OneDark => "One Dark",
+            }
+        }
+
+        pub fn as_str(&self) -> &'static str {
+            match self {
+                Self::ForgeDark => "forge-dark",
+                Self::CatppuccinMocha => "catppuccin-mocha",
+                Self::Nord => "nord",
+                Self::Dracula => "dracula",
+                Self::OneDark => "one-dark",
+            }
+        }
+
+        pub fn from_str(s: &str) -> Option<Self> {
+            match s {
+                "forge-dark" => Some(Self::ForgeDark),
+                "catppuccin-mocha" => Some(Self::CatppuccinMocha),
+                "nord" => Some(Self::Nord),
+                "dracula" => Some(Self::Dracula),
+                "one-dark" => Some(Self::OneDark),
+                _ => None,
+            }
+        }
+
+        pub fn all() -> &'static [ThemeName] {
+            &[
+                Self::ForgeDark,
+                Self::CatppuccinMocha,
+                Self::Nord,
+                Self::Dracula,
+                Self::OneDark,
+            ]
+        }
+
+        pub fn colors(&self) -> ThemeColors {
+            match self {
+                Self::ForgeDark => FORGE_DARK,
+                Self::CatppuccinMocha => CATPPUCCIN_MOCHA,
+                Self::Nord => NORD,
+                Self::Dracula => DRACULA,
+                Self::OneDark => ONE_DARK,
+            }
+        }
     }
-    pub fn surface1() -> Rgba {
-        rgb(0x21262d)
+
+    const FORGE_DARK: ThemeColors = ThemeColors {
+        base: 0x0a0e14,
+        mantle: 0x0d1117,
+        surface0: 0x161b22,
+        surface1: 0x21262d,
+        text: 0xc9d1d9,
+        subtext: 0x8b949e,
+        blue: 0x58a6ff,
+        green: 0x3fb950,
+        red: 0xf85149,
+        yellow: 0xd29922,
+        lavender: 0x79c0ff,
+        overlay: 0x484f58,
+        selection: 0x1a3050,
+    };
+
+    const CATPPUCCIN_MOCHA: ThemeColors = ThemeColors {
+        base: 0x1e1e2e,
+        mantle: 0x181825,
+        surface0: 0x313244,
+        surface1: 0x45475a,
+        text: 0xcdd6f4,
+        subtext: 0xa6adc8,
+        blue: 0x89b4fa,
+        green: 0xa6e3a1,
+        red: 0xf38ba8,
+        yellow: 0xf9e2af,
+        lavender: 0xb4befe,
+        overlay: 0x6c7086,
+        selection: 0x364060,
+    };
+
+    const NORD: ThemeColors = ThemeColors {
+        base: 0x2e3440,
+        mantle: 0x272c36,
+        surface0: 0x3b4252,
+        surface1: 0x434c5e,
+        text: 0xeceff4,
+        subtext: 0xd8dee9,
+        blue: 0x88c0d0,
+        green: 0xa3be8c,
+        red: 0xbf616a,
+        yellow: 0xebcb8b,
+        lavender: 0xb48ead,
+        overlay: 0x4c566a,
+        selection: 0x3b4f6a,
+    };
+
+    const DRACULA: ThemeColors = ThemeColors {
+        base: 0x282a36,
+        mantle: 0x21222c,
+        surface0: 0x343746,
+        surface1: 0x44475a,
+        text: 0xf8f8f2,
+        subtext: 0xbfbfbf,
+        blue: 0x8be9fd,
+        green: 0x50fa7b,
+        red: 0xff5555,
+        yellow: 0xf1fa8c,
+        lavender: 0xbd93f9,
+        overlay: 0x6272a4,
+        selection: 0x44475a,
+    };
+
+    const ONE_DARK: ThemeColors = ThemeColors {
+        base: 0x21252b,
+        mantle: 0x1b1d23,
+        surface0: 0x282c34,
+        surface1: 0x353b45,
+        text: 0xabb2bf,
+        subtext: 0x7f848e,
+        blue: 0x61afef,
+        green: 0x98c379,
+        red: 0xe06c75,
+        yellow: 0xe5c07b,
+        lavender: 0xc678dd,
+        overlay: 0x4b5263,
+        selection: 0x2c3545,
+    };
+
+    struct ThemeState {
+        name: ThemeName,
+        colors: ThemeColors,
     }
-    pub fn text() -> Rgba {
-        rgb(0xc9d1d9)
+
+    static CURRENT: Mutex<ThemeState> = Mutex::new(ThemeState {
+        name: ThemeName::ForgeDark,
+        colors: FORGE_DARK,
+    });
+
+    pub fn set_theme(name: ThemeName) {
+        let mut state = CURRENT.lock().unwrap();
+        state.name = name;
+        state.colors = name.colors();
     }
-    pub fn subtext() -> Rgba {
-        rgb(0x8b949e)
+
+    pub fn current_name() -> ThemeName {
+        CURRENT.lock().unwrap().name
     }
-    pub fn blue() -> Rgba {
-        rgb(0x58a6ff)
+
+    fn c() -> ThemeColors {
+        CURRENT.lock().unwrap().colors
     }
-    pub fn green() -> Rgba {
-        rgb(0x3fb950)
-    }
-    pub fn red() -> Rgba {
-        rgb(0xf85149)
-    }
-    pub fn yellow() -> Rgba {
-        rgb(0xd29922)
-    }
-    pub fn lavender() -> Rgba {
-        rgb(0x79c0ff)
-    }
-    pub fn overlay() -> Rgba {
-        rgb(0x484f58)
-    }
+
+    pub fn base() -> Rgba { rgb(c().base) }
+    pub fn mantle() -> Rgba { rgb(c().mantle) }
+    pub fn surface0() -> Rgba { rgb(c().surface0) }
+    pub fn surface1() -> Rgba { rgb(c().surface1) }
+    pub fn text() -> Rgba { rgb(c().text) }
+    pub fn subtext() -> Rgba { rgb(c().subtext) }
+    pub fn blue() -> Rgba { rgb(c().blue) }
+    pub fn green() -> Rgba { rgb(c().green) }
+    pub fn red() -> Rgba { rgb(c().red) }
+    pub fn yellow() -> Rgba { rgb(c().yellow) }
+    pub fn lavender() -> Rgba { rgb(c().lavender) }
+    pub fn overlay() -> Rgba { rgb(c().overlay) }
+    pub fn cursor() -> Rgba { rgb(c().blue) }
+    pub fn selection() -> Rgba { rgb(c().selection) }
 }

@@ -11,3 +11,4 @@ serde.workspace = true
 ignore = "0.4"
 notify = "7"
 git2 = "0.19"
+ide_workspace = { path = "../workspace" }

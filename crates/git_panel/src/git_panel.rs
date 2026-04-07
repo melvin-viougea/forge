@@ -4,23 +4,7 @@ use std::path::PathBuf;
 
 use crate::status::{get_changes, get_commits, ChangeStatus, GitCommit, GitFileChange};
 
-mod colors {
-    use gpui::rgb;
-    use gpui::Rgba;
-
-    pub fn base() -> Rgba { rgb(0x0a0e14) }
-    pub fn mantle() -> Rgba { rgb(0x0d1117) }
-    pub fn surface0() -> Rgba { rgb(0x161b22) }
-    pub fn surface1() -> Rgba { rgb(0x21262d) }
-    pub fn text() -> Rgba { rgb(0xc9d1d9) }
-    pub fn subtext() -> Rgba { rgb(0x8b949e) }
-    pub fn blue() -> Rgba { rgb(0x58a6ff) }
-    pub fn green() -> Rgba { rgb(0x3fb950) }
-    pub fn red() -> Rgba { rgb(0xf85149) }
-    pub fn yellow() -> Rgba { rgb(0xd29922) }
-    pub fn overlay() -> Rgba { rgb(0x484f58) }
-    pub fn lavender() -> Rgba { rgb(0x79c0ff) }
-}
+use ide_workspace::theme as colors;
 
 /// Events emitted by the runner button
 pub enum RunnerEvent {
@@ -447,6 +431,9 @@ fn render_change_entry(
 pub struct GitLogPanel {
     root_path: PathBuf,
     commits: Vec<GitCommit>,
+    scroll_px: f32,
+    scroll_acc: f32,
+    pub visible_height: f32,
     _poll_task: Task<()>,
 }
 
@@ -476,7 +463,7 @@ impl GitLogPanel {
             }
         });
 
-        Self { root_path, commits, _poll_task: poll_task }
+        Self { root_path, commits, scroll_px: 0.0, scroll_acc: 0.0, visible_height: 200.0, _poll_task: poll_task }
     }
 }
 
@@ -506,14 +493,14 @@ fn render_commit_entry(idx: usize, commit: &GitCommit) -> Stateful<Div> {
         .flex_row()
         .items_center()
         .w_full()
-        .h(px(28.))
+        .h(px(22.))
         .px(px(8.))
         .hover(|d| d.bg(colors::surface0()))
         // Hash
         .child(
             div()
                 .flex_shrink_0()
-                .w(px(52.))
+                .w(px(60.))
                 .text_color(colors::blue())
                 .child(commit.hash.clone()),
         )

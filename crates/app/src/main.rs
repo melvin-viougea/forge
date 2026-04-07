@@ -1,5 +1,6 @@
 mod updater;
 mod session;
+mod settings;
 
 use gpui::*;
 use gpui::prelude::*;
@@ -8,6 +9,7 @@ use std::time::Duration;
 
 use ide_file_explorer::FileExplorerPanel;
 use ide_git_panel::{CommitPanel, GitChangesPanel, GitLogPanel, RunnerEvent};
+use ide_workspace::theme::{self, ThemeName};
 use ide_terminal::{LayoutDimensions, TerminalView, TerminalViewEvent};
 use ide_workspace::{IdeWorkspace, Pane, PaneEvent, WorkspaceEvent};
 
@@ -16,6 +18,8 @@ use ide_workspace::{IdeWorkspace, Pane, PaneEvent, WorkspaceEvent};
 struct ProjectPanel {
     projects: Vec<ProjectEntry>,
     active_project: Option<usize>,
+    order: Vec<usize>,
+    drop_indicator: Option<usize>,
 }
 
 impl EventEmitter<ProjectPanelEvent> for ProjectPanel {}
@@ -24,6 +28,35 @@ enum ProjectPanelEvent {
     AddProjectRequested,
     ProjectSelected(usize, PathBuf),
     ProjectClosed(usize),
+    ProjectReordered,
+}
+
+#[derive(Clone)]
+struct DraggedProject {
+    actual_idx: usize,
+    name: String,
+}
+
+struct DragProjectPreview {
+    name: String,
+}
+
+impl Render for DragProjectPreview {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px(px(10.))
+            .py(px(8.))
+            .w(px(160.))
+            .rounded(px(6.))
+            .bg(colors::surface0())
+            .border_1()
+            .border_color(colors::blue())
+            .text_sm()
+            .font_weight(FontWeight::BOLD)
+            .text_color(colors::text())
+            .opacity(0.85)
+            .child(self.name.clone())
+    }
 }
 
 struct ProjectEntry {
@@ -43,24 +76,15 @@ fn shorten_path(path: &PathBuf) -> String {
     s
 }
 
-mod colors {
-    use gpui::rgb;
-    use gpui::Rgba;
-
-    pub fn mantle() -> Rgba { rgb(0x0d1117) }
-    pub fn surface0() -> Rgba { rgb(0x161b22) }
-    pub fn surface1() -> Rgba { rgb(0x21262d) }
-    pub fn text() -> Rgba { rgb(0xc9d1d9) }
-    pub fn subtext() -> Rgba { rgb(0x8b949e) }
-    pub fn blue() -> Rgba { rgb(0x58a6ff) }
-    pub fn overlay() -> Rgba { rgb(0x484f58) }
-}
+use ide_workspace::theme as colors;
 
 impl ProjectPanel {
     fn new() -> Self {
         Self {
             projects: Vec::new(),
             active_project: None,
+            order: Vec::new(),
+            drop_indicator: None,
         }
     }
 }
@@ -102,76 +126,167 @@ impl Render for ProjectPanel {
                     ),
             )
             // CMUX-style floating cards
-            .child(
+            .child({
+                let drop_indicator = self.drop_indicator;
+                let order_len = self.order.len();
                 div()
+                    .id("projects-list")
                     .flex_1()
                     .flex()
                     .flex_col()
                     .p(px(6.))
-                    .gap(px(2.))
-                    .children(self.projects.iter().enumerate().map(|(idx, project)| {
-                        let is_active = active == Some(idx);
+                    // Container drop handler
+                    .on_drop(cx.listener(|this, info: &DraggedProject, _window, cx| {
+                        if let Some(insert_pos) = this.drop_indicator {
+                            if let Some(src) = this.order.iter().position(|&i| i == info.actual_idx) {
+                                let val = this.order.remove(src);
+                                let adj = if src < insert_pos { insert_pos - 1 } else { insert_pos };
+                                this.order.insert(adj, val);
+                                cx.emit(ProjectPanelEvent::ProjectReordered);
+                            }
+                        }
+                        this.drop_indicator = None;
+                        cx.notify();
+                    }))
+                    .children(self.order.iter().enumerate().map(|(display_pos, &actual_idx)| {
+                        let project = &self.projects[actual_idx];
+                        let is_active = active == Some(actual_idx);
                         let path = project.path.clone();
                         let count = self.projects.len();
+                        let drag_name = project.name.clone();
+                        let project_name = project.name.clone();
+                        let show_above = drop_indicator == Some(display_pos);
+                        let show_below = display_pos == order_len - 1 && drop_indicator == Some(order_len);
                         div()
-                            .id(ElementId::Name(format!("project-{}", idx).into()))
-                            .flex()
-                            .flex_row()
-                            .items_center()
                             .w_full()
-                            .px(px(10.))
-                            .py(px(12.))
-                            .rounded(px(6.))
-                            .cursor_pointer()
-                            .when(is_active, |d: Stateful<Div>| {
-                                d.bg(colors::blue())
-                            })
-                            .when(!is_active, |d: Stateful<Div>| {
-                                d.hover(|d| d.bg(colors::surface0()))
-                            })
-                            // Project name
+                            .flex()
+                            .flex_col()
+                            // Gap zone above: hover here → insert ABOVE this card
                             .child(
                                 div()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .truncate()
-                                    .text_sm()
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(if is_active { gpui::rgb(0xffffff) } else { colors::text() })
-                                    .child(project.name.clone()),
+                                    .id(ElementId::Name(format!("gap-{}", display_pos).into()))
+                                    .w_full()
+                                    .h(px(6.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .on_drag_move::<DraggedProject>(cx.listener(move |this, ev: &DragMoveEvent<DraggedProject>, _window, cx| {
+                                        let mouse_y: f32 = ev.event.position.y.into();
+                                        let oy: f32 = ev.bounds.origin.y.into();
+                                        let h: f32 = ev.bounds.size.height.into();
+                                        if mouse_y < oy || mouse_y >= oy + h { return; }
+                                        if this.drop_indicator != Some(display_pos) {
+                                            this.drop_indicator = Some(display_pos);
+                                            cx.notify();
+                                        }
+                                    }))
+                                    .when(show_above, |d: Stateful<Div>| {
+                                        d.child(div().w_full().h(px(2.)).bg(colors::blue()).rounded(px(1.)))
+                                    })
                             )
-                            // Close button
-                            .when(count > 1, |d: Stateful<Div>| {
+                            // Card: hover here → insert BELOW this card
+                            .child(
+                                div()
+                                    .id(ElementId::Name(format!("project-{}", actual_idx).into()))
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .w_full()
+                                    .px(px(10.))
+                                    .py(px(12.))
+                                    .rounded(px(6.))
+                                    .cursor_pointer()
+                                    .when(is_active, |d: Stateful<Div>| {
+                                        d.bg(colors::blue())
+                                    })
+                                    .when(!is_active, |d: Stateful<Div>| {
+                                        d.hover(|d| d.bg(colors::surface0()))
+                                    })
+                                    .on_drag(DraggedProject { actual_idx, name: drag_name }, move |info, _offset, _window, cx| {
+                                        cx.new(|_cx| DragProjectPreview { name: info.name.clone() })
+                                    })
+                                    .on_drag_move::<DraggedProject>(cx.listener(move |this, ev: &DragMoveEvent<DraggedProject>, _window, cx| {
+                                        let mouse_y: f32 = ev.event.position.y.into();
+                                        let oy: f32 = ev.bounds.origin.y.into();
+                                        let h: f32 = ev.bounds.size.height.into();
+                                        if mouse_y < oy || mouse_y >= oy + h { return; }
+                                        let target = if mouse_y < oy + h / 2.0 {
+                                            Some(display_pos)
+                                        } else {
+                                            Some(display_pos + 1)
+                                        };
+                                        if this.drop_indicator != target {
+                                            this.drop_indicator = target;
+                                            cx.notify();
+                                        }
+                                    }))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .truncate()
+                                            .text_sm()
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(if is_active { gpui::rgb(0xffffff) } else { colors::text() })
+                                            .child(project_name),
+                                    )
+                                    .when(count > 1, |d: Stateful<Div>| {
+                                        d.child(
+                                            div()
+                                                .id(ElementId::Name(format!("close-project-{}", actual_idx).into()))
+                                                .flex_shrink_0()
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .w(px(16.))
+                                                .h(px(16.))
+                                                .rounded(px(3.))
+                                                .text_sm()
+                                                .text_color(if is_active { gpui::rgb(0xffffffaa) } else { colors::overlay() })
+                                                .cursor_pointer()
+                                                .hover(|d| d.text_color(colors::text()).bg(colors::surface0()))
+                                                .child("×")
+                                                .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+                                                    cx.stop_propagation();
+                                                })
+                                                .on_click(cx.listener(move |_this, _ev, _window, cx| {
+                                                    cx.emit(ProjectPanelEvent::ProjectClosed(actual_idx));
+                                                })),
+                                        )
+                                    })
+                                    .on_click(cx.listener(move |this, _ev, _window, cx| {
+                                        this.active_project = Some(actual_idx);
+                                        cx.emit(ProjectPanelEvent::ProjectSelected(actual_idx, path.clone()));
+                                        cx.notify();
+                                    })),
+                            )
+                            // Bottom gap zone (last card only)
+                            .when(display_pos == order_len - 1, |d: Div| {
                                 d.child(
                                     div()
-                                        .id(ElementId::Name(format!("close-project-{}", idx).into()))
-                                        .flex_shrink_0()
+                                        .id("gap-bottom")
+                                        .w_full()
+                                        .h(px(6.))
                                         .flex()
                                         .items_center()
                                         .justify_center()
-                                        .w(px(16.))
-                                        .h(px(16.))
-                                        .rounded(px(3.))
-                                        .text_sm()
-                                        .text_color(if is_active { gpui::rgb(0xffffffaa) } else { colors::overlay() })
-                                        .cursor_pointer()
-                                        .hover(|d| d.text_color(colors::text()).bg(colors::surface0()))
-                                        .child("×")
-                                        .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
-                                            cx.stop_propagation();
+                                        .on_drag_move::<DraggedProject>(cx.listener(move |this, ev: &DragMoveEvent<DraggedProject>, _window, cx| {
+                                            let mouse_y: f32 = ev.event.position.y.into();
+                                            let oy: f32 = ev.bounds.origin.y.into();
+                                            let h: f32 = ev.bounds.size.height.into();
+                                            if mouse_y < oy || mouse_y >= oy + h { return; }
+                                            if this.drop_indicator != Some(order_len) {
+                                                this.drop_indicator = Some(order_len);
+                                                cx.notify();
+                                            }
+                                        }))
+                                        .when(show_below, |d: Stateful<Div>| {
+                                            d.child(div().w_full().h(px(2.)).bg(colors::blue()).rounded(px(1.)))
                                         })
-                                        .on_click(cx.listener(move |this, _ev, _window, cx| {
-                                            cx.emit(ProjectPanelEvent::ProjectClosed(idx));
-                                        })),
                                 )
                             })
-                            .on_click(cx.listener(move |this, _ev, _window, cx| {
-                                this.active_project = Some(idx);
-                                cx.emit(ProjectPanelEvent::ProjectSelected(idx, path.clone()));
-                                cx.notify();
-                            }))
-                    })),
-            )
+                    }))
+            })
     }
 }
 
@@ -263,6 +378,9 @@ impl Render for RightPanel {
                     let y: f32 = ev.position.y.into();
                     let delta = this.drag_start_y - y;
                     this.log_height = (this.drag_start_height + delta).clamp(100., 600.);
+                    this.git_log.update(cx, |log, _| {
+                        log.visible_height = this.log_height - 28.0;
+                    });
                     cx.notify();
                 }
             }))
@@ -427,6 +545,11 @@ impl Render for RightPanel {
                             .child("Git Log")
                             .on_click(cx.listener(|this, _ev, _window, cx| {
                                 this.log_expanded = !this.log_expanded;
+                                if this.log_expanded {
+                                    this.git_log.update(cx, |log, _| {
+                                        log.visible_height = this.log_height - 28.0;
+                                    });
+                                }
                                 cx.emit(RightPanelEvent::LayoutChanged);
                                 cx.notify();
                             })),
@@ -466,6 +589,7 @@ struct AppView {
     terminal_count: usize,
     update_info: Option<updater::UpdateInfo>,
     update_status: Option<(u8, String)>,
+    settings_open: bool,
     _project_subscription: Subscription,
     _workspace_subscription: Subscription,
     _update_task: Task<()>,
@@ -473,8 +597,14 @@ struct AppView {
 
 impl AppView {
     fn save_session(&self, cx: &App) {
-        let paths: Vec<PathBuf> = self.project_states.iter().map(|s| s.path.clone()).collect();
-        let active = self.active_project.unwrap_or(0);
+        // Save paths in display order
+        let panel = self.project_panel.read(cx);
+        let paths: Vec<PathBuf> = panel.order.iter()
+            .map(|&i| self.project_states[i].path.clone())
+            .collect();
+        let active_actual = self.active_project.unwrap_or(0);
+        // Translate active index to display position
+        let active = panel.order.iter().position(|&i| i == active_actual).unwrap_or(0);
 
         let ws = self.workspace.read(cx);
         let left_w = ws.left_dock.read(cx).width();
@@ -503,6 +633,36 @@ impl AppView {
 }
 
 impl AppView {
+    fn notify_all(&self, cx: &mut Context<Self>) {
+        self.workspace.update(cx, |ws, cx| {
+            ws.left_dock.update(cx, |_, cx| cx.notify());
+            ws.right_dock.update(cx, |_, cx| cx.notify());
+            ws.center_pane.update(cx, |_, cx| cx.notify());
+            cx.notify();
+        });
+        self.project_panel.update(cx, |_, cx| cx.notify());
+        for state in &self.project_states {
+            state.pane.update(cx, |_, cx| cx.notify());
+            state.right_panel.update(cx, |rp, cx| {
+                rp.commit_panel.update(cx, |_, cx| cx.notify());
+                rp.file_explorer.update(cx, |_, cx| cx.notify());
+                rp.git_changes.update(cx, |_, cx| cx.notify());
+                rp.git_log.update(cx, |_, cx| cx.notify());
+                cx.notify();
+            });
+            if let Some(ref rt) = state.runner_terminal {
+                rt.update(cx, |_, cx| cx.notify());
+            }
+        }
+        cx.notify();
+    }
+
+    fn apply_theme(&mut self, name: ThemeName, cx: &mut Context<Self>) {
+        theme::set_theme(name);
+        settings::save(name);
+        self.notify_all(cx);
+    }
+
     fn add_project(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.add_project_with_cmd(path, Some("ccc"), cx);
     }
@@ -677,6 +837,7 @@ impl AppView {
         let display_path = shorten_path(&panel_path);
         self.project_panel.update(cx, |panel, cx| {
             panel.projects.push(ProjectEntry { name, path: panel_path, display_path });
+            panel.order.push(idx);
             panel.active_project = Some(idx);
             cx.notify();
         });
@@ -730,12 +891,12 @@ impl Render for AppView {
             });
         }
 
-        let base = div().size_full().child(self.workspace.clone());
+        let mut base = div().size_full().child(self.workspace.clone());
 
         if let Some((percent, message)) = &self.update_status {
             let pct = *percent;
             let msg = message.clone();
-            base.child(
+            base = base.child(
                 div()
                     .absolute()
                     .top_0()
@@ -753,37 +914,190 @@ impl Render for AppView {
                             .gap(px(16.))
                             .child(
                                 div()
-                                    .text_color(rgb(0xc9d1d9))
+                                    .text_color(colors::text())
                                     .text_size(px(16.))
                                     .child(msg),
                             )
                             .child(
-                                // Progress bar container
                                 div()
                                     .w(px(300.))
                                     .h(px(6.))
                                     .rounded(px(3.))
-                                    .bg(rgb(0x21262d))
+                                    .bg(colors::surface1())
                                     .child(
-                                        // Progress bar fill
                                         div()
                                             .h_full()
                                             .rounded(px(3.))
-                                            .bg(rgb(0x58a6ff))
+                                            .bg(colors::blue())
                                             .w(px(300. * pct as f32 / 100.)),
                                     ),
                             )
                             .child(
                                 div()
-                                    .text_color(rgb(0x8b949e))
+                                    .text_color(colors::subtext())
                                     .text_size(px(13.))
                                     .child(format!("{}%", pct)),
                             ),
                     ),
-            )
-        } else {
-            base
+            );
         }
+
+        if self.settings_open {
+            let current = theme::current_name();
+            base = base.child(
+                div()
+                    .id("settings-overlay")
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .bg(rgba(0x000000cc))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .font_family("Berkeley Mono, SF Mono, Menlo, monospace")
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _ev: &MouseDownEvent, _window, cx| {
+                        this.settings_open = false;
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .id("settings-panel")
+                            .flex()
+                            .flex_col()
+                            .w(px(420.))
+                            .max_h(px(500.))
+                            .bg(colors::mantle())
+                            .border_1()
+                            .border_color(colors::surface1())
+                            .rounded(px(8.))
+                            .overflow_hidden()
+                            .on_mouse_down(MouseButton::Left, |_ev: &MouseDownEvent, _window, cx| {
+                                cx.stop_propagation();
+                            })
+                            // Header
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .w_full()
+                                    .h(px(44.))
+                                    .px(px(16.))
+                                    .flex_shrink_0()
+                                    .border_b_1()
+                                    .border_color(colors::surface1())
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .text_size(px(14.))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(colors::text())
+                                            .child("Settings"),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("close-settings")
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .w(px(24.))
+                                            .h(px(24.))
+                                            .rounded(px(4.))
+                                            .cursor_pointer()
+                                            .text_size(px(16.))
+                                            .text_color(colors::overlay())
+                                            .hover(|d| d.text_color(colors::text()).bg(colors::surface0()))
+                                            .child("×")
+                                            .on_click(cx.listener(|this, _ev, _window, cx| {
+                                                this.settings_open = false;
+                                                cx.notify();
+                                            })),
+                                    ),
+                            )
+                            // Theme section
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .p(px(16.))
+                                    .gap(px(12.))
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(colors::subtext())
+                                            .child("THEME"),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(4.))
+                                            .children(ThemeName::all().iter().map(|&name| {
+                                                let is_selected = name == current;
+                                                let tc = name.colors();
+                                                div()
+                                                    .id(ElementId::Name(format!("theme-{}", name.as_str()).into()))
+                                                    .flex()
+                                                    .flex_row()
+                                                    .items_center()
+                                                    .w_full()
+                                                    .px(px(12.))
+                                                    .py(px(10.))
+                                                    .rounded(px(6.))
+                                                    .cursor_pointer()
+                                                    .when(is_selected, |d: Stateful<Div>| {
+                                                        d.bg(colors::surface0())
+                                                            .border_1()
+                                                            .border_color(colors::blue())
+                                                    })
+                                                    .when(!is_selected, |d: Stateful<Div>| {
+                                                        d.hover(|d| d.bg(colors::surface0()))
+                                                    })
+                                                    // Color preview swatches
+                                                    .child(
+                                                        div()
+                                                            .flex()
+                                                            .flex_row()
+                                                            .gap(px(3.))
+                                                            .mr(px(12.))
+                                                            .child(div().w(px(16.)).h(px(16.)).rounded(px(3.)).bg(rgb(tc.base)))
+                                                            .child(div().w(px(16.)).h(px(16.)).rounded(px(3.)).bg(rgb(tc.surface0)))
+                                                            .child(div().w(px(16.)).h(px(16.)).rounded(px(3.)).bg(rgb(tc.blue)))
+                                                            .child(div().w(px(16.)).h(px(16.)).rounded(px(3.)).bg(rgb(tc.green)))
+                                                            .child(div().w(px(16.)).h(px(16.)).rounded(px(3.)).bg(rgb(tc.red)))
+                                                            .child(div().w(px(16.)).h(px(16.)).rounded(px(3.)).bg(rgb(tc.lavender)))
+                                                    )
+                                                    // Theme name
+                                                    .child(
+                                                        div()
+                                                            .flex_1()
+                                                            .text_size(px(13.))
+                                                            .text_color(if is_selected { colors::text() } else { colors::subtext() })
+                                                            .font_weight(if is_selected { FontWeight::BOLD } else { FontWeight::NORMAL })
+                                                            .child(name.label()),
+                                                    )
+                                                    // Checkmark for selected
+                                                    .when(is_selected, |d: Stateful<Div>| {
+                                                        d.child(
+                                                            div()
+                                                                .text_size(px(14.))
+                                                                .text_color(colors::blue())
+                                                                .child("✓"),
+                                                        )
+                                                    })
+                                                    .on_click(cx.listener(move |this, _ev, _window, cx| {
+                                                        this.apply_theme(name, cx);
+                                                    }))
+                                            })),
+                                    ),
+                            ),
+                    ),
+            );
+        }
+
+        base
     }
 }
 
@@ -855,6 +1169,11 @@ fn main() {
                                 this.project_states.remove(idx);
                                 this.project_panel.update(cx, |panel, cx| {
                                     panel.projects.remove(idx);
+                                    // Remove from order and shift indices > idx
+                                    panel.order.retain(|&i| i != idx);
+                                    for v in panel.order.iter_mut() {
+                                        if *v > idx { *v -= 1; }
+                                    }
                                     cx.notify();
                                 });
                                 // Switch to a valid project
@@ -868,6 +1187,9 @@ fn main() {
                                     panel.active_project = Some(new_idx);
                                     cx.notify();
                                 });
+                                this.save_session(cx);
+                            }
+                            ProjectPanelEvent::ProjectReordered => {
                                 this.save_session(cx);
                             }
                         }
@@ -943,7 +1265,8 @@ fn main() {
                                 }
                             }
                             WorkspaceEvent::SettingsClicked => {
-                                // TODO: open settings panel
+                                this.settings_open = !this.settings_open;
+                                cx.notify();
                             }
                             WorkspaceEvent::RunClicked => {
                                 if let Some(idx) = this.active_project {
@@ -1022,6 +1345,10 @@ fn main() {
                         }
                     });
 
+                    // Load settings and apply theme
+                    let saved_settings = settings::load();
+                    theme::set_theme(saved_settings.theme);
+
                     let mut app_view = AppView {
                         workspace,
                         project_panel,
@@ -1030,6 +1357,7 @@ fn main() {
                         terminal_count: 0,
                         update_info: None,
                         update_status: None,
+                        settings_open: false,
                         _project_subscription: project_sub,
                         _workspace_subscription: workspace_sub,
                         _update_task: update_task,
@@ -1064,9 +1392,12 @@ fn main() {
                             state.pane.update(cx, |pane, _cx| {
                                 pane.set_sidebar_width(sidebar_w);
                             });
-                            state.right_panel.update(cx, |rp, _cx| {
+                            state.right_panel.update(cx, |rp, cx| {
                                 rp.log_height = log_h;
                                 rp.log_expanded = log_exp;
+                                rp.git_log.update(cx, |log, _| {
+                                    log.visible_height = log_h - 28.0;
+                                });
                             });
                         }
                     }

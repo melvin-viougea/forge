@@ -2,20 +2,7 @@ use gpui::*;
 use gpui::prelude::*;
 use std::path::{Path, PathBuf};
 
-mod colors {
-    use gpui::rgb;
-    use gpui::Rgba;
-
-    pub fn base() -> Rgba { rgb(0x0a0e14) }
-    pub fn mantle() -> Rgba { rgb(0x0d1117) }
-    pub fn surface0() -> Rgba { rgb(0x161b22) }
-    pub fn surface1() -> Rgba { rgb(0x21262d) }
-    pub fn text() -> Rgba { rgb(0xc9d1d9) }
-    pub fn subtext() -> Rgba { rgb(0x8b949e) }
-    pub fn green() -> Rgba { rgb(0x3fb950) }
-    pub fn red() -> Rgba { rgb(0xf85149) }
-    pub fn overlay() -> Rgba { rgb(0x484f58) }
-}
+use ide_workspace::theme as colors;
 
 #[derive(Clone)]
 pub struct DiffLine {

@@ -70,19 +70,10 @@ pub struct TerminalView {
     /// When true, terminal sizes itself for a narrow side panel (e.g. 280px).
     pub compact: bool,
     detected_title: Option<String>,
+    scroll_acc: f32,
 }
 
-mod colors {
-    use gpui::rgb;
-    use gpui::Rgba;
-
-    pub fn base() -> Rgba { rgb(0x0a0e14) }
-    pub fn mantle() -> Rgba { rgb(0x0d1117) }
-    pub fn text() -> Rgba { rgb(0xc9d1d9) }
-    pub fn cursor() -> Rgba { rgb(0x58a6ff) }
-    pub fn surface1() -> Rgba { rgb(0x21262d) }
-    pub fn selection() -> Rgba { rgb(0x1a3050) }
-}
+use ide_workspace::theme as colors;
 
 impl TerminalView {
     pub fn new(title: String, cx: &mut Context<Self>) -> Self {
@@ -152,6 +143,7 @@ impl TerminalView {
             is_selecting: false,
             compact: false,
             detected_title: None,
+            scroll_acc: 0.0,
         }
     }
 }
@@ -416,14 +408,6 @@ impl Render for TerminalView {
         let (scroll_offset, history_size, screen_lines) = self.terminal.scroll_info();
         let selection = self.selection.clone();
 
-        // Scrollbar thumb calculation
-        let total = history_size + screen_lines;
-        let thumb_ratio = if total > 0 { screen_lines as f32 / total as f32 } else { 1.0 };
-        let thumb_pos = if total > screen_lines {
-            (history_size - scroll_offset) as f32 / total as f32
-        } else {
-            0.0
-        };
 
         div()
             .id("terminal-view")
@@ -471,8 +455,10 @@ impl Render for TerminalView {
             .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _window, cx| {
                 let delta = ev.delta.pixel_delta(px(1.0));
                 let dy: f32 = delta.y.into();
-                let lines = (dy / 8.0) as i32;
+                this.scroll_acc += dy;
+                let lines = (this.scroll_acc / 8.0) as i32;
                 if lines != 0 {
+                    this.scroll_acc -= lines as f32 * 8.0;
                     this.terminal.scroll(lines);
                     cx.notify();
                 }
@@ -593,36 +579,6 @@ impl Render for TerminalView {
                                 render_line_sel(line, idx, sel_ref)
                             }
                         }),
-                    ),
-            )
-            // Scrollbar track (always visible)
-            .child(
-                div()
-                    .w(px(10.))
-                    .h_full()
-                    .flex_shrink_0()
-                    .bg(colors::mantle())
-                    .flex()
-                    .flex_col()
-                    .child(
-                        // Spacer above thumb
-                        div().h(gpui::DefiniteLength::Fraction(thumb_pos))
-                    )
-                    .child(
-                        // Thumb (centered in track)
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .w_full()
-                            .h(gpui::DefiniteLength::Fraction(thumb_ratio.max(0.05)))
-                            .child(
-                                div()
-                                    .w(px(6.))
-                                    .h_full()
-                                    .bg(colors::surface1())
-                                    .rounded(px(3.)),
-                            ),
                     ),
             )
     }

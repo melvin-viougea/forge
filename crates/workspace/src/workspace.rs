@@ -123,6 +123,7 @@ impl Render for IdeWorkspace {
                     .w_full()
                     .h(px(30.))
                     .pt(px(2.))
+                    .when(is_fullscreen, |d| d.pb(px(1.)))
                     .flex_shrink_0()
                     .bg(theme::mantle())
                     // Left: update button
@@ -170,7 +171,7 @@ impl Render for IdeWorkspace {
                                     .text_sm()
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(theme::blue())
-                                    .child("FORGE v0.9.12"),
+                                    .child("FORGE v0.9.13"),
                             ),
                     )
                     // Right: run + push + settings
@@ -191,11 +192,11 @@ impl Render for IdeWorkspace {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .w(px(28.))
-                                    .h(px(28.))
+                                    .w(px(32.))
+                                    .h(px(22.))
                                     .rounded(px(4.))
                                     .cursor_pointer()
-                                    .text_size(px(13.))
+                                    .text_size(px(if self.is_running { 16. } else { 13. }))
                                     .text_color(run_color)
                                     .hover(|d| d.text_color(theme::text()).bg(theme::surface0()))
                                     .child(if self.is_running { "◼" } else { "▶" })
@@ -210,8 +211,8 @@ impl Render for IdeWorkspace {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .w(px(28.))
-                                    .h(px(28.))
+                                    .w(px(32.))
+                                    .h(px(22.))
                                     .rounded(px(4.))
                                     .cursor_pointer()
                                     .text_size(px(16.))
@@ -229,8 +230,8 @@ impl Render for IdeWorkspace {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .w(px(28.))
-                                    .h(px(28.))
+                                    .w(px(32.))
+                                    .h(px(22.))
                                     .rounded(px(4.))
                                     .cursor_pointer()
                                     .text_size(px(20.))

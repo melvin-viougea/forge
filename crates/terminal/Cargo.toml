@@ -10,3 +10,4 @@ log.workspace = true
 tokio.workspace = true
 portable-pty = "0.8"
 alacritty_terminal = "0.26.0-rc1"
+ide_workspace = { path = "../workspace" }

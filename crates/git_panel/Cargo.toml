@@ -10,3 +10,4 @@ log.workspace = true
 serde.workspace = true
 tokio.workspace = true
 git2 = "0.19"
+ide_workspace = { path = "../workspace" }
