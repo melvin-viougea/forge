@@ -19,6 +19,34 @@ pub enum PaneEvent {
     LayoutChanged,
 }
 
+#[derive(Clone)]
+struct DraggedTab {
+    tab_id: usize,
+    title: String,
+}
+
+struct DragTabPreview {
+    name: String,
+}
+
+impl Render for DragTabPreview {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px(px(10.))
+            .py(px(8.))
+            .w(px(160.))
+            .rounded(px(6.))
+            .bg(theme::surface0())
+            .border_1()
+            .border_color(theme::blue())
+            .text_sm()
+            .font_weight(FontWeight::BOLD)
+            .text_color(theme::text())
+            .opacity(0.85)
+            .child(self.name.clone())
+    }
+}
+
 /// A pane containing multiple tabs (center area)
 pub struct Pane {
     tabs: Vec<Tab>,
@@ -28,6 +56,7 @@ pub struct Pane {
     dragging_sidebar: bool,
     drag_start_x: f32,
     drag_start_width: f32,
+    drop_indicator: Option<usize>,
 }
 
 impl gpui::EventEmitter<PaneEvent> for Pane {}
@@ -42,6 +71,22 @@ impl Pane {
             dragging_sidebar: false,
             drag_start_x: 0.,
             drag_start_width: 0.,
+            drop_indicator: None,
+        }
+    }
+
+    fn reorder_tab(&mut self, tab_id: usize, insert_pos: usize) {
+        let Some(src) = self.tabs.iter().position(|t| t.id == tab_id) else { return };
+        let active_id = self.tabs.get(self.active_tab).map(|t| t.id);
+        let tab = self.tabs.remove(src);
+        let adj = if src < insert_pos { insert_pos - 1 } else { insert_pos };
+        let adj = adj.min(self.tabs.len());
+        self.tabs.insert(adj, tab);
+        // Restore active tab index
+        if let Some(aid) = active_id {
+            if let Some(new_idx) = self.tabs.iter().position(|t| t.id == aid) {
+                self.active_tab = new_idx;
+            }
         }
     }
 
@@ -107,6 +152,8 @@ impl Pane {
     fn render_sidebar(&self, cx: &mut Context<Self>) -> Div {
         let active_tab = self.active_tab;
         let count = self.tabs.len();
+        let drop_indicator = self.drop_indicator;
+        let tab_count = self.tabs.len();
 
         div()
             .flex()
@@ -115,7 +162,7 @@ impl Pane {
             .min_w(px(self.sidebar_width))
             .h_full()
             .flex_shrink_0()
-            .bg(theme::mantle())
+            .bg(theme::mantle_bg())
             // New Terminal button
             .child(
                 div()
@@ -149,76 +196,158 @@ impl Pane {
                     .flex_col()
                     .overflow_y_scroll()
                     .p(px(6.))
-                    .gap(px(2.))
+                    .on_drop(cx.listener(|this, info: &DraggedTab, _window, cx| {
+                        if let Some(insert_pos) = this.drop_indicator {
+                            this.reorder_tab(info.tab_id, insert_pos);
+                        }
+                        this.drop_indicator = None;
+                        cx.notify();
+                    }))
                     .children(self.tabs.iter().enumerate().map(|(idx, tab)| {
                         let tab_id = tab.id;
                         let is_active = idx == active_tab;
                         let closable = tab.closable && count > 1;
+                        let drag_title = tab.title.clone();
+                        let show_above = drop_indicator == Some(idx);
+                        let show_below = idx == tab_count - 1 && drop_indicator == Some(tab_count);
 
                         div()
-                            .id(ElementId::Name(format!("tab-{}", tab_id).into()))
+                            .w_full()
                             .flex()
                             .flex_col()
-                            .w_full()
-                            .px(px(10.))
-                            .py(px(8.))
-                            .rounded(px(6.))
-                            .cursor_pointer()
-                            .when(is_active, |d: Stateful<Div>| {
-                                d.bg(theme::surface1())
-                                    .border_l_2()
-                                    .border_color(theme::blue())
-                            })
-                            .when(!is_active, |d: Stateful<Div>| {
-                                d.hover(|d| d.bg(theme::surface0()))
-                            })
-                            // Title row with close button
+                            // Gap zone above
                             .child(
                                 div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
+                                    .id(ElementId::Name(format!("tab-gap-{}", idx).into()))
                                     .w_full()
+                                    .h(px(6.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .on_drag_move::<DraggedTab>(cx.listener(move |this, ev: &DragMoveEvent<DraggedTab>, _window, cx| {
+                                        let mouse_y: f32 = ev.event.position.y.into();
+                                        let oy: f32 = ev.bounds.origin.y.into();
+                                        let h: f32 = ev.bounds.size.height.into();
+                                        if mouse_y < oy || mouse_y >= oy + h { return; }
+                                        if this.drop_indicator != Some(idx) {
+                                            this.drop_indicator = Some(idx);
+                                            cx.notify();
+                                        }
+                                    }))
+                                    .when(show_above, |d: Stateful<Div>| {
+                                        d.child(div().w_full().h(px(2.)).bg(theme::blue()).rounded(px(1.)))
+                                    })
+                            )
+                            // Tab card
+                            .child(
+                                div()
+                                    .id(ElementId::Name(format!("tab-{}", tab_id).into()))
+                                    .flex()
+                                    .flex_col()
+                                    .w_full()
+                                    .px(px(10.))
+                                    .py(px(8.))
+                                    .rounded(px(6.))
+                                    .cursor_pointer()
+                                    .when(is_active, |d: Stateful<Div>| {
+                                        d.bg(theme::surface1())
+                                            .border_l_2()
+                                            .border_color(theme::blue())
+                                    })
+                                    .when(!is_active, |d: Stateful<Div>| {
+                                        d.hover(|d| d.bg(theme::surface0()))
+                                    })
+                                    .on_drag(DraggedTab { tab_id, title: drag_title }, move |info, _offset, _window, cx| {
+                                        cx.new(|_cx| DragTabPreview { name: info.title.clone() })
+                                    })
+                                    .on_drag_move::<DraggedTab>(cx.listener(move |this, ev: &DragMoveEvent<DraggedTab>, _window, cx| {
+                                        let mouse_y: f32 = ev.event.position.y.into();
+                                        let oy: f32 = ev.bounds.origin.y.into();
+                                        let h: f32 = ev.bounds.size.height.into();
+                                        if mouse_y < oy || mouse_y >= oy + h { return; }
+                                        let target = if mouse_y < oy + h / 2.0 {
+                                            Some(idx)
+                                        } else {
+                                            Some(idx + 1)
+                                        };
+                                        if this.drop_indicator != target {
+                                            this.drop_indicator = target;
+                                            cx.notify();
+                                        }
+                                    }))
+                                    // Title row with close button
                                     .child(
                                         div()
-                                            .flex_1()
-                                            .min_w(px(0.))
-                                            .truncate()
-                                            .text_sm()
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(if is_active { theme::text() } else { theme::subtext() })
-                                            .child(tab.title.clone()),
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .w_full()
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w(px(0.))
+                                                    .truncate()
+                                                    .text_sm()
+                                                    .font_weight(FontWeight::BOLD)
+                                                    .text_color(if is_active { theme::text() } else { theme::subtext() })
+                                                    .child(tab.title.clone()),
+                                            )
+                                            .when(closable, |d: Div| {
+                                                d.child(
+                                                    div()
+                                                        .id(ElementId::Name(format!("close-{}", tab_id).into()))
+                                                        .flex_shrink_0()
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .w(px(16.))
+                                                        .h(px(16.))
+                                                        .rounded(px(3.))
+                                                        .text_sm()
+                                                        .text_color(theme::overlay())
+                                                        .cursor_pointer()
+                                                        .hover(|d| d.text_color(theme::text()).bg(theme::surface0()))
+                                                        .child("×")
+                                                        .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
+                                                            cx.stop_propagation();
+                                                        })
+                                                        .on_click(cx.listener(move |this, _ev, _window, cx| {
+                                                            this.close_tab(tab_id);
+                                                            cx.notify();
+                                                        })),
+                                                )
+                                            }),
                                     )
-                                    .when(closable, |d: Div| {
-                                        d.child(
-                                            div()
-                                                .id(ElementId::Name(format!("close-{}", tab_id).into()))
-                                                .flex_shrink_0()
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .w(px(16.))
-                                                .h(px(16.))
-                                                .rounded(px(3.))
-                                                .text_sm()
-                                                .text_color(theme::overlay())
-                                                .cursor_pointer()
-                                                .hover(|d| d.text_color(theme::text()).bg(theme::surface0()))
-                                                .child("×")
-                                                .on_mouse_down(MouseButton::Left, move |_ev, _window, cx| {
-                                                    cx.stop_propagation();
-                                                })
-                                                .on_click(cx.listener(move |this, _ev, _window, cx| {
-                                                    this.close_tab(tab_id);
-                                                    cx.notify();
-                                                })),
-                                        )
-                                    }),
+                                    .on_click(cx.listener(move |this, _ev, _window, cx| {
+                                        this.set_active_tab(tab_id);
+                                        cx.notify();
+                                    }))
                             )
-                            .on_click(cx.listener(move |this, _ev, _window, cx| {
-                                this.set_active_tab(tab_id);
-                                cx.notify();
-                            }))
+                            // Bottom gap zone (last tab only)
+                            .when(idx == tab_count - 1, |d: Div| {
+                                d.child(
+                                    div()
+                                        .id("tab-gap-bottom")
+                                        .w_full()
+                                        .h(px(6.))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .on_drag_move::<DraggedTab>(cx.listener(move |this, ev: &DragMoveEvent<DraggedTab>, _window, cx| {
+                                            let mouse_y: f32 = ev.event.position.y.into();
+                                            let oy: f32 = ev.bounds.origin.y.into();
+                                            let h: f32 = ev.bounds.size.height.into();
+                                            if mouse_y < oy || mouse_y >= oy + h { return; }
+                                            if this.drop_indicator != Some(tab_count) {
+                                                this.drop_indicator = Some(tab_count);
+                                                cx.notify();
+                                            }
+                                        }))
+                                        .when(show_below, |d: Stateful<Div>| {
+                                            d.child(div().w_full().h(px(2.)).bg(theme::blue()).rounded(px(1.)))
+                                        })
+                                )
+                            })
                     })),
             )
     }
@@ -233,7 +362,7 @@ impl Render for Pane {
             .flex()
             .flex_row()
             .size_full()
-            .bg(theme::base())
+            .bg(theme::base_bg())
             .when(is_dragging, |d| {
                 d.cursor(CursorStyle::ResizeLeftRight)
             })

@@ -98,7 +98,7 @@ impl Render for IdeWorkspace {
             .flex()
             .flex_col()
             .size_full()
-            .bg(theme::base())
+            .bg(theme::base_bg())
             .text_color(theme::text())
             .font_family("Berkeley Mono, SF Mono, Menlo, monospace")
             // Global mouse move/up for drag handling
@@ -125,7 +125,7 @@ impl Render for IdeWorkspace {
                     .pt(px(2.))
                     .when(is_fullscreen, |d| d.pb(px(1.)))
                     .flex_shrink_0()
-                    .bg(theme::mantle())
+                    .bg(theme::mantle_bg())
                     // Left: update button
                     .child(
                         div()
@@ -171,7 +171,7 @@ impl Render for IdeWorkspace {
                                     .text_sm()
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(theme::blue())
-                                    .child("FORGE v0.9.14"),
+                                    .child("FORGE v0.9.15"),
                             ),
                     )
                     // Right: run + push + settings

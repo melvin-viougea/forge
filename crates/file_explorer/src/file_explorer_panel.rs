@@ -273,7 +273,7 @@ impl Render for FileExplorerPanel {
             .flex()
             .flex_col()
             .size_full()
-            .bg(colors::mantle())
+            .bg(colors::mantle_bg())
             .id("file-explorer-scroll")
             .overflow_y_scroll()
             .text_sm()

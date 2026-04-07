@@ -97,7 +97,7 @@ impl Render for ProjectPanel {
             .flex()
             .flex_col()
             .size_full()
-            .bg(colors::mantle())
+            .bg(colors::mantle_bg())
             .text_sm()
             // New Workspace button
             .child(
@@ -369,7 +369,7 @@ impl Render for RightPanel {
             .flex()
             .flex_col()
             .size_full()
-            .bg(colors::mantle())
+            .bg(colors::mantle_bg())
             .when(is_dragging_log, |d| {
                 d.cursor(CursorStyle::ResizeUpDown)
             })
@@ -590,6 +590,7 @@ struct AppView {
     update_info: Option<updater::UpdateInfo>,
     update_status: Option<(u8, String)>,
     settings_open: bool,
+    wallpaper_path: Option<String>,
     _project_subscription: Subscription,
     _workspace_subscription: Subscription,
     _update_task: Task<()>,
@@ -659,7 +660,14 @@ impl AppView {
 
     fn apply_theme(&mut self, name: ThemeName, cx: &mut Context<Self>) {
         theme::set_theme(name);
-        settings::save(name);
+        settings::save(name, self.wallpaper_path.as_deref());
+        self.notify_all(cx);
+    }
+
+    fn apply_wallpaper(&mut self, path: Option<String>, cx: &mut Context<Self>) {
+        theme::set_wallpaper(path.clone());
+        self.wallpaper_path = path;
+        settings::save(theme::current_name(), self.wallpaper_path.as_deref());
         self.notify_all(cx);
     }
 
@@ -891,7 +899,24 @@ impl Render for AppView {
             });
         }
 
-        let mut base = div().size_full().child(self.workspace.clone());
+        let mut base = div().size_full();
+
+        // Wallpaper layer
+        if let Some(ref wp) = self.wallpaper_path {
+            let path = std::path::PathBuf::from(wp);
+            if path.exists() {
+                base = base.child(
+                    img(path)
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .object_fit(ObjectFit::Cover)
+                );
+            }
+        }
+
+        base = base.child(self.workspace.clone());
 
         if let Some((percent, message)) = &self.update_status {
             let pct = *percent;
@@ -1092,6 +1117,94 @@ impl Render for AppView {
                                                     }))
                                             })),
                                     ),
+                            )
+                            // Wallpaper section
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .p(px(16.))
+                                    .gap(px(12.))
+                                    .border_t_1()
+                                    .border_color(colors::surface1())
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(colors::subtext())
+                                            .child("WALLPAPER"),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .gap(px(12.))
+                                            .child(
+                                                div()
+                                                    .id("choose-wallpaper")
+                                                    .px(px(12.))
+                                                    .py(px(8.))
+                                                    .rounded(px(6.))
+                                                    .cursor_pointer()
+                                                    .bg(colors::surface0())
+                                                    .text_sm()
+                                                    .text_color(colors::text())
+                                                    .hover(|d| d.bg(colors::surface1()))
+                                                    .child("Choose Image...")
+                                                    .on_click(cx.listener(|this, _ev, _window, cx| {
+                                                        this.settings_open = false;
+                                                        cx.notify();
+                                                        let receiver = cx.prompt_for_paths(PathPromptOptions {
+                                                            files: true,
+                                                            directories: false,
+                                                            multiple: false,
+                                                            prompt: Some("Select wallpaper image".into()),
+                                                        });
+                                                        cx.spawn(async |this: WeakEntity<AppView>, cx: &mut AsyncApp| {
+                                                            if let Ok(Ok(Some(paths))) = receiver.await {
+                                                                if let Some(path) = paths.first() {
+                                                                    let path_str = path.display().to_string();
+                                                                    this.update(cx, |view, cx| {
+                                                                        view.apply_wallpaper(Some(path_str), cx);
+                                                                    }).ok();
+                                                                }
+                                                            }
+                                                        }).detach();
+                                                    })),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .text_size(px(11.))
+                                                    .text_color(colors::subtext())
+                                                    .truncate()
+                                                    .child(
+                                                        self.wallpaper_path
+                                                            .as_ref()
+                                                            .map(|p| shorten_path(&PathBuf::from(p)))
+                                                            .unwrap_or_else(|| "None".to_string())
+                                                    ),
+                                            ),
+                                    )
+                                    .when(self.wallpaper_path.is_some(), |d: Div| {
+                                        d.child(
+                                            div()
+                                                .id("remove-wallpaper")
+                                                .px(px(12.))
+                                                .py(px(6.))
+                                                .rounded(px(6.))
+                                                .cursor_pointer()
+                                                .bg(colors::surface0())
+                                                .text_sm()
+                                                .text_color(colors::red())
+                                                .hover(|d| d.bg(colors::surface1()))
+                                                .child("Remove Wallpaper")
+                                                .on_click(cx.listener(|this, _ev, _window, cx| {
+                                                    this.apply_wallpaper(None, cx);
+                                                })),
+                                        )
+                                    }),
                             ),
                     ),
             );
@@ -1345,9 +1458,10 @@ fn main() {
                         }
                     });
 
-                    // Load settings and apply theme
+                    // Load settings and apply theme + wallpaper
                     let saved_settings = settings::load();
                     theme::set_theme(saved_settings.theme);
+                    theme::set_wallpaper(saved_settings.wallpaper.clone());
 
                     let mut app_view = AppView {
                         workspace,
@@ -1358,6 +1472,7 @@ fn main() {
                         update_info: None,
                         update_status: None,
                         settings_open: false,
+                        wallpaper_path: saved_settings.wallpaper,
                         _project_subscription: project_sub,
                         _workspace_subscription: workspace_sub,
                         _update_task: update_task,

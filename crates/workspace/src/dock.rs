@@ -53,7 +53,7 @@ impl Render for Dock {
             .min_w(px(self.width))
             .flex_shrink_0()
             .h_full()
-            .bg(theme::mantle())
+            .bg(theme::mantle_bg())
             .children(self.view.clone())
     }
 }

@@ -9,24 +9,36 @@ fn settings_path() -> Option<PathBuf> {
 
 pub struct SavedSettings {
     pub theme: ThemeName,
+    pub wallpaper: Option<String>,
 }
 
-pub fn save(theme: ThemeName) {
+pub fn save(theme: ThemeName, wallpaper: Option<&str>) {
     let Some(path) = settings_path() else { return };
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let json = format!("{{\"theme\":\"{}\"}}", theme.as_str());
+    let wp = match wallpaper {
+        Some(p) => format!(",\"wallpaper\":\"{}\"", p.replace('\\', "\\\\").replace('"', "\\\"")),
+        None => String::new(),
+    };
+    let json = format!("{{\"theme\":\"{}\"{}}}", theme.as_str(), wp);
     let _ = std::fs::write(&path, json);
 }
 
 pub fn load() -> SavedSettings {
-    let theme = settings_path()
-        .and_then(|p| std::fs::read_to_string(&p).ok())
-        .and_then(|content| parse_string(&content, "theme"))
+    let content = settings_path()
+        .and_then(|p| std::fs::read_to_string(&p).ok());
+
+    let theme = content.as_ref()
+        .and_then(|c| parse_string(c, "theme"))
         .and_then(|s| ThemeName::from_str(&s))
         .unwrap_or(ThemeName::ForgeDark);
-    SavedSettings { theme }
+
+    let wallpaper = content.as_ref()
+        .and_then(|c| parse_string(c, "wallpaper"))
+        .filter(|p| PathBuf::from(p).exists());
+
+    SavedSettings { theme, wallpaper }
 }
 
 fn parse_string(json: &str, key: &str) -> Option<String> {

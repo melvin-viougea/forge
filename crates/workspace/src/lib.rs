@@ -195,6 +195,27 @@ pub mod theme {
         CURRENT.lock().unwrap().colors
     }
 
+    // ── Wallpaper state ──────────────────────────────
+    static WALLPAPER: Mutex<Option<String>> = Mutex::new(None);
+
+    pub fn set_wallpaper(path: Option<String>) {
+        *WALLPAPER.lock().unwrap() = path;
+    }
+
+    pub fn wallpaper() -> Option<String> {
+        WALLPAPER.lock().unwrap().clone()
+    }
+
+    pub fn has_wallpaper() -> bool {
+        WALLPAPER.lock().unwrap().is_some()
+    }
+
+    fn translucent(mut color: Rgba, alpha: f32) -> Rgba {
+        if has_wallpaper() { color.a = alpha; }
+        color
+    }
+
+    // ── Color accessors ─────────────────────────────
     pub fn base() -> Rgba { rgb(c().base) }
     pub fn mantle() -> Rgba { rgb(c().mantle) }
     pub fn surface0() -> Rgba { rgb(c().surface0) }
@@ -209,4 +230,9 @@ pub mod theme {
     pub fn overlay() -> Rgba { rgb(c().overlay) }
     pub fn cursor() -> Rgba { rgb(c().blue) }
     pub fn selection() -> Rgba { rgb(c().selection) }
+
+    // Translucent variants for wallpaper mode
+    pub fn base_bg() -> Rgba { translucent(base(), 0.55) }
+    pub fn mantle_bg() -> Rgba { translucent(mantle(), 0.60) }
+    pub fn surface0_bg() -> Rgba { translucent(surface0(), 0.65) }
 }

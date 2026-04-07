@@ -113,7 +113,7 @@ impl Render for DiffView {
                 div()
                     .px(px(8.))
                     .py(px(4.))
-                    .bg(colors::mantle())
+                    .bg(colors::mantle_bg())
                     .border_b_1()
                     .border_color(colors::surface1())
                     .text_color(colors::subtext())
