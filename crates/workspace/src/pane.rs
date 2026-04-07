@@ -49,7 +49,7 @@ impl Render for DragTabPreview {
 
 /// A pane containing multiple tabs (center area)
 pub struct Pane {
-    tabs: Vec<Tab>,
+    pub tabs: Vec<Tab>,
     active_tab: usize,
     next_tab_id: usize,
     sidebar_width: f32,

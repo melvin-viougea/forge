@@ -4,6 +4,12 @@ use std::path::PathBuf;
 
 use crate::file_tree::{build_file_tree, get_git_statuses, FileEntry, GitFileStatus};
 
+pub enum FileExplorerEvent {
+    FileOpened(PathBuf),
+}
+
+impl gpui::EventEmitter<FileExplorerEvent> for FileExplorerPanel {}
+
 /// File explorer panel for the right dock
 pub struct FileExplorerPanel {
     root_path: PathBuf,
@@ -324,6 +330,9 @@ impl Render for FileExplorerPanel {
                                 this.selected_index = Some(idx);
                                 if this.entries[idx].entry.is_dir {
                                     this.toggle_expand(idx);
+                                } else {
+                                    let abs_path = this.root_path.join(&this.entries[idx].entry.path);
+                                    cx.emit(FileExplorerEvent::FileOpened(abs_path));
                                 }
                                 cx.notify();
                             }))

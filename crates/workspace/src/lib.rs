@@ -1,8 +1,10 @@
 pub mod dock;
+pub mod file_view;
 pub mod pane;
 pub mod workspace;
 
 pub use dock::*;
+pub use file_view::*;
 pub use pane::*;
 pub use workspace::*;
 

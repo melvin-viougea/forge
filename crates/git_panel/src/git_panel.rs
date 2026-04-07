@@ -142,6 +142,12 @@ impl Render for CommitPanel {
     }
 }
 
+pub enum GitChangesEvent {
+    FileOpened(PathBuf),
+}
+
+impl gpui::EventEmitter<GitChangesEvent> for GitChangesPanel {}
+
 /// Git changes panel (bottom of right dock)
 pub struct GitChangesPanel {
     root_path: PathBuf,
@@ -412,6 +418,8 @@ fn render_change_entry(
         .on_click(cx.listener(move |this, _ev, _window, cx| {
             this.context_menu = None;
             this.selected_index = Some(idx);
+            let abs_path = this.root_path.join(&this.changes[idx].path);
+            cx.emit(GitChangesEvent::FileOpened(abs_path));
             cx.notify();
         }))
         .on_mouse_down(MouseButton::Right, cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {

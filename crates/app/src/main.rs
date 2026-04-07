@@ -7,9 +7,10 @@ use gpui::prelude::*;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use ide_file_explorer::FileExplorerPanel;
-use ide_git_panel::{CommitPanel, GitChangesPanel, GitLogPanel, RunnerEvent};
+use ide_file_explorer::{FileExplorerPanel, FileExplorerEvent};
+use ide_git_panel::{CommitPanel, GitChangesPanel, GitChangesEvent, GitLogPanel, RunnerEvent};
 use ide_workspace::theme::{self, ThemeName};
+use ide_workspace::{FileView, FileViewEvent};
 use ide_terminal::{LayoutDimensions, TerminalView, TerminalViewEvent};
 use ide_workspace::{IdeWorkspace, Pane, PaneEvent, WorkspaceEvent};
 
@@ -299,8 +300,8 @@ enum RightTab {
 
 struct RightPanel {
     pub commit_panel: Entity<CommitPanel>,
-    file_explorer: Entity<FileExplorerPanel>,
-    git_changes: Entity<GitChangesPanel>,
+    pub file_explorer: Entity<FileExplorerPanel>,
+    pub git_changes: Entity<GitChangesPanel>,
     git_log: Entity<GitLogPanel>,
     active_tab: RightTab,
     runner_terminal: Option<Entity<TerminalView>>,
@@ -573,6 +574,8 @@ struct ProjectState {
     _pane_sub: Subscription,
     _runner_sub: Subscription,
     _right_panel_sub: Subscription,
+    _file_explorer_sub: Subscription,
+    _git_changes_sub: Subscription,
 }
 
 // ── AppView ──────────────────────────────────────────────────
@@ -665,6 +668,56 @@ impl AppView {
         self.wallpaper_path = path;
         settings::save(theme::current_name(), self.wallpaper_path.as_deref());
         self.notify_all(cx);
+    }
+
+    fn open_file_in_pane(&mut self, pane: &Entity<Pane>, path: PathBuf, cx: &mut Context<Self>) {
+        // Check if file is already open in this pane — switch to it
+        let existing = pane.read(cx).tabs.iter().position(|tab| tab.detail == path.to_string_lossy());
+        if let Some(idx) = existing {
+            let tab_id = pane.read(cx).tabs[idx].id;
+            pane.update(cx, |p, cx| {
+                p.set_active_tab(tab_id);
+                cx.notify();
+            });
+            return;
+        }
+
+        let filename = path.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "file".to_string());
+
+        let ext = path.extension()
+            .map(|e| e.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let icon = match ext.as_str() {
+            "rs" => "⚙ ",
+            "ts" | "tsx" | "js" | "jsx" => "◇ ",
+            "json" | "toml" | "yaml" | "yml" => "{ ",
+            "md" | "txt" => "¶ ",
+            "css" | "scss" => "# ",
+            _ => "□ ",
+        };
+
+        let detail = path.to_string_lossy().to_string();
+        let file_view = cx.new(|cx| FileView::new(path, cx));
+        let pane_for_title = pane.clone();
+        let tab_id_ref = std::cell::Cell::new(0usize);
+        let tab_id = pane.update(cx, |p, _cx| {
+            p.add_tab(filename, icon, detail, AnyView::from(file_view.clone()), true)
+        });
+        // Subscribe to title changes (modified indicator)
+        let pane_entity = pane.clone();
+        cx.subscribe(&file_view, move |_this: &mut AppView, _fv, event: &FileViewEvent, cx| {
+            match event {
+                FileViewEvent::TitleChanged(new_title) => {
+                    pane_entity.update(cx, |pane, cx| {
+                        pane.set_tab_title(tab_id, new_title.clone());
+                        cx.notify();
+                    });
+                }
+            }
+        }).detach();
+        cx.notify();
     }
 
     fn add_project(&mut self, path: PathBuf, cx: &mut Context<Self>) {
@@ -823,6 +876,28 @@ impl AppView {
             }
         });
 
+        // Subscribe to file open events from file explorer
+        let file_explorer_entity = right_panel.read(cx).file_explorer.clone();
+        let pane_for_fe = pane.clone();
+        let file_explorer_sub = cx.subscribe(&file_explorer_entity, move |this: &mut AppView, _fe, event: &FileExplorerEvent, cx| {
+            match event {
+                FileExplorerEvent::FileOpened(path) => {
+                    this.open_file_in_pane(&pane_for_fe, path.clone(), cx);
+                }
+            }
+        });
+
+        // Subscribe to file open events from git changes
+        let git_changes_entity = right_panel.read(cx).git_changes.clone();
+        let pane_for_gc = pane.clone();
+        let git_changes_sub = cx.subscribe(&git_changes_entity, move |this: &mut AppView, _gc, event: &GitChangesEvent, cx| {
+            match event {
+                GitChangesEvent::FileOpened(path) => {
+                    this.open_file_in_pane(&pane_for_gc, path.clone(), cx);
+                }
+            }
+        });
+
         let state = ProjectState {
             path,
             pane,
@@ -831,6 +906,8 @@ impl AppView {
             _pane_sub: pane_sub,
             _runner_sub: runner_sub,
             _right_panel_sub: right_panel_sub,
+            _file_explorer_sub: file_explorer_sub,
+            _git_changes_sub: git_changes_sub,
         };
 
         self.project_states.push(state);

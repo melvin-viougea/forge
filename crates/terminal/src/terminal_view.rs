@@ -229,6 +229,8 @@ impl Focusable for TerminalView {
 /// Render a styled span as a GPUI element
 fn render_span(text: String, style: &CellStyle, bold: bool, selected: bool) -> Div {
     let fg = style.fg.to_rgba(true);
+    // Replace spaces with non-breaking spaces so GPUI doesn't collapse them
+    let text = text.replace(' ', "\u{00A0}");
 
     let mut el = div()
         .text_color(fg)
@@ -307,22 +309,34 @@ fn render_line_with_cursor_sel(
         return render_line_sel(line, row_idx, selection);
     }
 
-    // Before cursor — render per-cell with selection
-    if cursor_col > 0 {
-        row = div()
-            .min_h(px(18.))
-            .flex()
-            .flex_row()
-            .overflow_hidden();
+    // Before cursor — group into spans (spaces within spans render correctly)
+    let before_end = cursor_col.min(cells.len());
+    if before_end > 0 {
+        let mut text = String::new();
+        let mut style = cells[0].style.clone();
+        let mut sel_state = selection.map_or(false, |s| s.is_selected(row_idx, 0));
 
-        for (col, cell) in cells.iter().enumerate().take(cursor_col.min(cells.len())) {
+        for col in 0..before_end {
+            let cell = &cells[col];
             let cell_sel = selection.map_or(false, |s| s.is_selected(row_idx, col));
-            row = row.child(render_span(
-                cell.ch.to_string(),
-                &cell.style,
-                cell.style.bold,
-                cell_sel,
-            ));
+            if cell.style.fg == style.fg
+                && cell.style.bg == style.bg
+                && cell.style.bold == style.bold
+                && cell_sel == sel_state
+            {
+                text.push(cell.ch);
+            } else {
+                if !text.is_empty() {
+                    row = row.child(render_span(text.clone(), &style, style.bold, sel_state));
+                }
+                text.clear();
+                text.push(cell.ch);
+                style = cell.style.clone();
+                sel_state = cell_sel;
+            }
+        }
+        if !text.is_empty() {
+            row = row.child(render_span(text, &style, style.bold, sel_state));
         }
     }
 
@@ -337,17 +351,34 @@ fn render_line_with_cursor_sel(
             .child(cursor_char.to_string()),
     );
 
-    // After cursor
+    // After cursor — group into spans
     if cursor_col + 1 < cells.len() {
-        for col in (cursor_col + 1)..cells.len() {
+        let start = cursor_col + 1;
+        let mut text = String::new();
+        let mut style = cells[start].style.clone();
+        let mut sel_state = selection.map_or(false, |s| s.is_selected(row_idx, start));
+
+        for col in start..cells.len() {
             let cell = &cells[col];
             let cell_sel = selection.map_or(false, |s| s.is_selected(row_idx, col));
-            row = row.child(render_span(
-                cell.ch.to_string(),
-                &cell.style,
-                cell.style.bold,
-                cell_sel,
-            ));
+            if cell.style.fg == style.fg
+                && cell.style.bg == style.bg
+                && cell.style.bold == style.bold
+                && cell_sel == sel_state
+            {
+                text.push(cell.ch);
+            } else {
+                if !text.is_empty() {
+                    row = row.child(render_span(text.clone(), &style, style.bold, sel_state));
+                }
+                text.clear();
+                text.push(cell.ch);
+                style = cell.style.clone();
+                sel_state = cell_sel;
+            }
+        }
+        if !text.is_empty() {
+            row = row.child(render_span(text, &style, style.bold, sel_state));
         }
     }
 

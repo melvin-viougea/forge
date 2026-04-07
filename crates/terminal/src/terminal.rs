@@ -279,11 +279,6 @@ impl Terminal {
                 cells.push(convert_cell(cell));
             }
 
-            // Trim trailing spaces (but keep lines with background colors)
-            while cells.last().map_or(false, |c| c.ch == ' ' && c.style.bg == TermColor::Default) {
-                cells.pop();
-            }
-
             lines.push(TerminalLine { cells });
         }
 
