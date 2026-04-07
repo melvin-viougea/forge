@@ -170,7 +170,7 @@ impl Render for IdeWorkspace {
                                     .text_sm()
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(theme::blue())
-                                    .child("FORGE v1.0.1"),
+                                    .child("FORGE v1.0.2"),
                             ),
                     )
                     // Right: run + push + settings

@@ -1951,19 +1951,93 @@ fn main() {
                                     this.update_status = Some((0, "Preparing update...".to_string()));
                                     cx.notify();
                                     cx.spawn(async move |this: WeakEntity<AppView>, cx: &mut AsyncApp| {
-                                        // Step 1: Download (0% -> 60%)
+                                        // Step 1: Get expected size
+                                        log::info!("Updater: starting download of v{}", info.version);
                                         this.update(cx, |view, cx| {
-                                            view.update_status = Some((10, "Downloading update...".to_string()));
+                                            view.update_status = Some((2, "Preparing download...".to_string()));
                                             cx.notify();
                                         }).ok();
 
-                                        let info_clone = info.clone();
-                                        let dl_result = cx.background_executor().spawn(async move {
-                                            updater::update_step_download(&info_clone)
+                                        let url = info.download_url.clone();
+                                        let expected_size: Option<u64> = cx.background_executor().spawn(async move {
+                                            updater::get_download_size(&url)
                                         }).await;
 
-                                        if let Err(e) = dl_result {
-                                            log::error!("Download failed: {}", e);
+                                        // Step 2: Start download as child process
+                                        let info_clone = info.clone();
+                                        let child_result = cx.background_executor().spawn(async move {
+                                            updater::start_download(&info_clone)
+                                        }).await;
+
+                                        let mut child = match child_result {
+                                            Ok(c) => c,
+                                            Err(e) => {
+                                                log::error!("Updater: download failed: {}", e);
+                                                this.update(cx, |view, cx| {
+                                                    view.update_status = Some((0, format!("Error: {}", e)));
+                                                    cx.notify();
+                                                }).ok();
+                                                cx.background_executor().timer(Duration::from_secs(3)).await;
+                                                this.update(cx, |view, cx| {
+                                                    view.update_status = None;
+                                                    cx.notify();
+                                                }).ok();
+                                                return;
+                                            }
+                                        };
+
+                                        // Step 3: Poll download progress
+                                        loop {
+                                            cx.background_executor().timer(Duration::from_millis(200)).await;
+                                            let downloaded = updater::download_progress();
+                                            let pct = if let Some(total) = expected_size {
+                                                ((downloaded as f64 / total as f64) * 55.0) as u8 + 5
+                                            } else {
+                                                // No size info: animate between 5-50
+                                                let t = (downloaded / (1024 * 100)) as u8;
+                                                (t.min(45)) + 5
+                                            };
+                                            let size_mb = downloaded as f64 / (1024.0 * 1024.0);
+                                            let msg = if let Some(total) = expected_size {
+                                                let total_mb = total as f64 / (1024.0 * 1024.0);
+                                                format!("Downloading... {:.1} / {:.1} MB", size_mb, total_mb)
+                                            } else {
+                                                format!("Downloading... {:.1} MB", size_mb)
+                                            };
+                                            this.update(cx, |view, cx| {
+                                                view.update_status = Some((pct.min(58), msg));
+                                                cx.notify();
+                                            }).ok();
+
+                                            // Check if curl finished
+                                            match child.try_wait() {
+                                                Ok(Some(status)) => {
+                                                    if !status.success() {
+                                                        log::error!("Updater: curl exited with {}", status);
+                                                        this.update(cx, |view, cx| {
+                                                            view.update_status = Some((0, "Error: download failed".to_string()));
+                                                            cx.notify();
+                                                        }).ok();
+                                                        cx.background_executor().timer(Duration::from_secs(3)).await;
+                                                        this.update(cx, |view, cx| {
+                                                            view.update_status = None;
+                                                            cx.notify();
+                                                        }).ok();
+                                                        return;
+                                                    }
+                                                    break;
+                                                }
+                                                Ok(None) => continue, // still running
+                                                Err(e) => {
+                                                    log::error!("Updater: wait error: {}", e);
+                                                    break;
+                                                }
+                                            }
+                                        }
+
+                                        // Verify download
+                                        if let Err(e) = updater::verify_download() {
+                                            log::error!("Updater: verify failed: {}", e);
                                             this.update(cx, |view, cx| {
                                                 view.update_status = Some((0, format!("Error: {}", e)));
                                                 cx.notify();
@@ -1976,7 +2050,8 @@ fn main() {
                                             return;
                                         }
 
-                                        // Step 2: Install (60% -> 90%)
+                                        // Step 4: Install (60% -> 90%)
+                                        log::info!("Updater: download complete, installing...");
                                         this.update(cx, |view, cx| {
                                             view.update_status = Some((60, "Installing update...".to_string()));
                                             cx.notify();
@@ -1987,7 +2062,7 @@ fn main() {
                                         }).await;
 
                                         if let Err(e) = install_result {
-                                            log::error!("Install failed: {}", e);
+                                            log::error!("Updater: install failed: {}", e);
                                             this.update(cx, |view, cx| {
                                                 view.update_status = Some((0, format!("Error: {}", e)));
                                                 cx.notify();
@@ -2000,7 +2075,8 @@ fn main() {
                                             return;
                                         }
 
-                                        // Step 3: Restart (100%)
+                                        // Step 5: Restart (100%)
+                                        log::info!("Updater: install complete, restarting...");
                                         this.update(cx, |view, cx| {
                                             view.update_status = Some((100, "Restarting...".to_string()));
                                             cx.notify();

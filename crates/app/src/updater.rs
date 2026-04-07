@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-pub const CURRENT_VERSION: &str = "1.0.0";
+pub const CURRENT_VERSION: &str = "1.0.2";
 const GITHUB_REPO: &str = "melvin-viougea/forge";
 
 #[derive(Clone, Debug)]
@@ -41,42 +41,102 @@ pub fn check_for_update() -> Option<UpdateInfo> {
     }
 }
 
-/// Step-by-step update with progress
-pub fn update_step_download(info: &UpdateInfo) -> Result<(), String> {
+/// Get the expected download size via a HEAD request
+pub fn get_download_size(url: &str) -> Option<u64> {
+    let output = Command::new("curl")
+        .args(["-sLI", "-o", "/dev/null", "-w", "%{size_download}\n%{redirect_url}", url])
+        .output()
+        .ok()?;
+    // Try content-length from headers
+    let headers = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    log::info!("Updater: HEAD response: {}", stdout.trim());
+
+    // Use curl -sLI to follow redirects and get Content-Length
+    let output2 = Command::new("curl")
+        .args(["-sLI", url])
+        .output()
+        .ok()?;
+    let header_text = String::from_utf8_lossy(&output2.stdout);
+    for line in header_text.lines() {
+        if line.to_lowercase().starts_with("content-length:") {
+            if let Some(val) = line.split(':').nth(1) {
+                if let Ok(size) = val.trim().parse::<u64>() {
+                    if size > 1000 {
+                        log::info!("Updater: expected download size: {} bytes", size);
+                        return Some(size);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Start download as a child process, returns the child
+pub fn start_download(info: &UpdateInfo) -> Result<std::process::Child, String> {
     let dmg_path = "/tmp/forge-update.dmg";
     let mount_point = "/tmp/forge-update-mount";
     let _ = std::fs::remove_file(dmg_path);
     let _ = Command::new("hdiutil").args(["detach", mount_point, "-quiet"]).status();
 
-    let status = Command::new("curl")
-        .args(["-L", "-s", "-o", dmg_path, &info.download_url])
-        .status()
-        .map_err(|e| format!("Download failed: {}", e))?;
-    if !status.success() {
-        return Err("Download failed".to_string());
+    log::info!("Updater: downloading from {}", info.download_url);
+
+    let child = Command::new("curl")
+        .args(["-L", "-f", "-o", dmg_path, &info.download_url])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Download failed to start: {}", e))?;
+
+    Ok(child)
+}
+
+/// Check current download progress (file size)
+pub fn download_progress() -> u64 {
+    std::fs::metadata("/tmp/forge-update.dmg")
+        .map(|m| m.len())
+        .unwrap_or(0)
+}
+
+/// Verify download completed successfully
+pub fn verify_download() -> Result<(), String> {
+    let dmg_path = "/tmp/forge-update.dmg";
+    match std::fs::metadata(dmg_path) {
+        Ok(m) => {
+            log::info!("Updater: downloaded {} bytes", m.len());
+            if m.len() < 1000 {
+                return Err(format!("Downloaded file too small ({} bytes)", m.len()));
+            }
+            Ok(())
+        }
+        Err(e) => Err(format!("Downloaded file not found: {}", e)),
     }
-    Ok(())
 }
 
 pub fn update_step_install() -> Result<(), String> {
     let dmg_path = "/tmp/forge-update.dmg";
     let mount_point = "/tmp/forge-update-mount";
 
-    let status = Command::new("hdiutil")
+    log::info!("Updater: mounting DMG...");
+    let output = Command::new("hdiutil")
         .args(["attach", dmg_path, "-mountpoint", mount_point, "-nobrowse", "-quiet"])
-        .status()
+        .output()
         .map_err(|e| format!("Mount failed: {}", e))?;
-    if !status.success() {
-        return Err("Mount DMG failed".to_string());
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Mount DMG failed: {}", stderr.trim()));
     }
 
     let new_app = format!("{}/Forge.app", mount_point);
     if !std::path::Path::new(&new_app).exists() {
+        log::error!("Updater: Forge.app not found in DMG at {}", new_app);
         let _ = Command::new("hdiutil").args(["detach", mount_point, "-quiet"]).status();
         return Err("Forge.app not found in DMG".to_string());
     }
 
     let app_path = find_app_bundle()?;
+    log::info!("Updater: installing to {:?}", app_path);
     let _ = std::fs::remove_dir_all(&app_path);
     let status = Command::new("cp")
         .args(["-R", &new_app, &app_path.display().to_string()])
@@ -89,6 +149,7 @@ pub fn update_step_install() -> Result<(), String> {
     if !status.success() {
         return Err("Failed to copy new version".to_string());
     }
+    log::info!("Updater: install complete");
     Ok(())
 }
 
