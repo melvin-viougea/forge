@@ -659,10 +659,13 @@ struct AppView {
     wallpaper_opacity: f32,
     wallpaper_crop_x: f32,
     wallpaper_crop_y: f32,
+    wallpaper_crop_zoom: f32,
     wallpaper_img_size: Option<(u32, u32)>,
     crop_picker_open: bool,
     crop_drag_start: Option<(f32, f32)>,
     crop_drag_initial: (f32, f32),
+    crop_dragging: bool,
+    crop_preview_bounds: std::rc::Rc<std::cell::Cell<(f32, f32, f32, f32)>>,
     toasts: Vec<Toast>,
     next_toast_id: usize,
     _project_subscription: Subscription,
@@ -881,6 +884,7 @@ impl AppView {
             self.crop_picker_open = true;
             self.wallpaper_crop_x = 0.5;
             self.wallpaper_crop_y = 0.5;
+            self.wallpaper_crop_zoom = 1.0;
         } else {
             theme::set_wallpaper(None);
             self.wallpaper_img_size = None;
@@ -905,6 +909,7 @@ impl AppView {
             self.wallpaper_opacity,
             self.wallpaper_crop_x,
             self.wallpaper_crop_y,
+            self.wallpaper_crop_zoom,
         );
     }
 
@@ -1086,6 +1091,14 @@ impl AppView {
                                         cx.notify();
                                     });
                                 }
+                                TerminalViewEvent::Bell => {
+                                    pane_entity.update(cx, |pane, cx| {
+                                        if pane.active_tab_id() != Some(tab_id) {
+                                            pane.set_tab_notification(tab_id, true);
+                                            cx.notify();
+                                        }
+                                    });
+                                }
                             }
                         }).detach();
                     }
@@ -1114,6 +1127,14 @@ impl AppView {
                     pane_for_title.update(cx, |pane, cx| {
                         pane.set_tab_title(tab_id, new_title.clone());
                         cx.notify();
+                    });
+                }
+                TerminalViewEvent::Bell => {
+                    pane_for_title.update(cx, |pane, cx| {
+                        if pane.active_tab_id() != Some(tab_id) {
+                            pane.set_tab_notification(tab_id, true);
+                            cx.notify();
+                        }
                     });
                 }
             }
@@ -1344,10 +1365,10 @@ impl Render for AppView {
                     let win_w: f32 = win_bounds.size.width.into();
                     let win_h: f32 = win_bounds.size.height.into();
 
-                    // Scale to cover
+                    // Scale to cover, then apply zoom
                     let scale_x = win_w / img_w as f32;
                     let scale_y = win_h / img_h as f32;
-                    let scale = scale_x.max(scale_y);
+                    let scale = scale_x.max(scale_y) * self.wallpaper_crop_zoom;
                     let scaled_w = img_w as f32 * scale;
                     let scaled_h = img_h as f32 * scale;
 
@@ -1460,12 +1481,14 @@ impl Render for AppView {
                 let disp_w = img_w * img_scale;
                 let disp_h = img_h * img_scale;
 
-                // Screen frame: what portion of the image is visible at cover scale
-                let cover_scale = (win_w / img_w).max(win_h / img_h);
+                // Screen frame: what portion of the image is visible at cover scale * zoom
+                let zoom = self.wallpaper_crop_zoom;
+                let base_cover = (win_w / img_w).max(win_h / img_h);
+                let cover_scale = base_cover * zoom;
                 let visible_w = win_w / cover_scale; // in image pixels
                 let visible_h = win_h / cover_scale;
-                let frame_w = visible_w * img_scale;
-                let frame_h = visible_h * img_scale;
+                let frame_w = (visible_w * img_scale).min(disp_w);
+                let frame_h = (visible_h * img_scale).min(disp_h);
 
                 // Frame position within displayed image
                 let range_x = (disp_w - frame_w).max(0.0);
@@ -1477,9 +1500,13 @@ impl Render for AppView {
                 let img_offset_x = (preview_w - disp_w) / 2.0;
                 let img_offset_y = (preview_h - disp_h) / 2.0;
 
-                let crop_x = self.wallpaper_crop_x;
-                let crop_y = self.wallpaper_crop_y;
                 let path = std::path::PathBuf::from(wp);
+                let zoom_label = format!("{}%", (zoom * 100.0).round() as u32);
+
+                // Bounds tracking for cursor-centered zoom
+                let container_bounds = self.crop_preview_bounds.clone();
+                let container_bounds_for_canvas = self.crop_preview_bounds.clone();
+                let entity = cx.entity().clone();
 
                 base = base.child(
                     div()
@@ -1493,14 +1520,92 @@ impl Render for AppView {
                         .flex_col()
                         .items_center()
                         .justify_center()
-                        .gap(px(20.))
-                        // Title
+                        .gap(px(12.))
+                        // Title + zoom controls row
                         .child(
                             div()
-                                .text_size(px(16.))
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(colors::text())
-                                .child("Position your wallpaper"),
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(16.))
+                                // Title
+                                .child(
+                                    div()
+                                        .text_size(px(16.))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(colors::text())
+                                        .child("Position your wallpaper"),
+                                )
+                                // Zoom controls (like image preview)
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap(px(4.))
+                                        // Reset button
+                                        .child(
+                                            div()
+                                                .id("crop-zoom-reset")
+                                                .flex().items_center().justify_center()
+                                                .h(px(24.)).px(px(8.)).rounded(px(4.))
+                                                .cursor_pointer().text_xs()
+                                                .text_color(colors::subtext())
+                                                .hover(|d| d.text_color(colors::text()).bg(colors::surface0()))
+                                                .child("Reset")
+                                                .on_click(cx.listener(|this, _ev, _window, cx| {
+                                                    this.wallpaper_crop_zoom = 1.0;
+                                                    this.wallpaper_crop_x = 0.5;
+                                                    this.wallpaper_crop_y = 0.5;
+                                                    cx.notify();
+                                                }))
+                                        )
+                                        .child(div().w(px(1.)).h(px(16.)).bg(colors::surface1()))
+                                        // Zoom out
+                                        .child(
+                                            div()
+                                                .id("crop-zoom-out")
+                                                .flex().items_center().justify_center()
+                                                .w(px(24.)).h(px(24.)).rounded(px(4.))
+                                                .cursor_pointer().text_sm().font_weight(FontWeight::BOLD)
+                                                .text_color(colors::subtext())
+                                                .hover(|d| d.text_color(colors::text()).bg(colors::surface0()))
+                                                .child("\u{2212}")
+                                                .on_click(cx.listener(|this, _ev, _window, cx| {
+                                                    this.wallpaper_crop_zoom = (this.wallpaper_crop_zoom / 1.25).max(1.0);
+                                                    cx.notify();
+                                                }))
+                                        )
+                                        // Zoom percentage
+                                        .child(
+                                            div()
+                                                .id("crop-zoom-label")
+                                                .flex().items_center().justify_center()
+                                                .min_w(px(48.)).h(px(24.)).rounded(px(4.))
+                                                .cursor_pointer().text_xs().text_color(colors::subtext())
+                                                .hover(|d| d.text_color(colors::text()).bg(colors::surface0()))
+                                                .child(zoom_label)
+                                                .on_click(cx.listener(|this, _ev, _window, cx| {
+                                                    this.wallpaper_crop_zoom = 1.0;
+                                                    cx.notify();
+                                                }))
+                                        )
+                                        // Zoom in
+                                        .child(
+                                            div()
+                                                .id("crop-zoom-in")
+                                                .flex().items_center().justify_center()
+                                                .w(px(24.)).h(px(24.)).rounded(px(4.))
+                                                .cursor_pointer().text_sm().font_weight(FontWeight::BOLD)
+                                                .text_color(colors::subtext())
+                                                .hover(|d| d.text_color(colors::text()).bg(colors::surface0()))
+                                                .child("+")
+                                                .on_click(cx.listener(|this, _ev, _window, cx| {
+                                                    this.wallpaper_crop_zoom = (this.wallpaper_crop_zoom * 1.25).min(5.0);
+                                                    cx.notify();
+                                                }))
+                                        )
+                                )
                         )
                         // Preview area with image + frame
                         .child(
@@ -1510,7 +1615,25 @@ impl Render for AppView {
                                 .w(px(preview_w))
                                 .h(px(preview_h))
                                 .overflow_hidden()
-                                .cursor(CursorStyle::Crosshair)
+                                .cursor(if self.crop_dragging { CursorStyle::ClosedHand } else { CursorStyle::OpenHand })
+                                // Invisible canvas to capture preview bounds
+                                .child(
+                                    canvas(
+                                        move |bounds, _window, _cx| {
+                                            container_bounds_for_canvas.set((
+                                                f32::from(bounds.origin.x),
+                                                f32::from(bounds.origin.y),
+                                                f32::from(bounds.size.width),
+                                                f32::from(bounds.size.height),
+                                            ));
+                                        },
+                                        |_bounds, _, _window, _cx| {},
+                                    )
+                                    .size_full()
+                                    .absolute()
+                                    .top(px(0.))
+                                    .left(px(0.))
+                                )
                                 // Full image
                                 .child(
                                     img(path)
@@ -1551,12 +1674,13 @@ impl Render for AppView {
                                                 .h(px(disp_h))
                                         )
                                 )
-                                // Drag handling on the preview area
+                                // Drag handling
                                 .on_mouse_down(MouseButton::Left, cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
                                     let mx: f32 = ev.position.x.into();
                                     let my: f32 = ev.position.y.into();
                                     this.crop_drag_start = Some((mx, my));
                                     this.crop_drag_initial = (this.wallpaper_crop_x, this.wallpaper_crop_y);
+                                    this.crop_dragging = true;
                                     cx.notify();
                                 }))
                                 .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _window, cx| {
@@ -1581,6 +1705,80 @@ impl Render for AppView {
                                 }))
                                 .on_mouse_up(MouseButton::Left, cx.listener(|this, _ev: &MouseUpEvent, _window, cx| {
                                     this.crop_drag_start = None;
+                                    this.crop_dragging = false;
+                                    cx.notify();
+                                }))
+                                .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _ev: &MouseUpEvent, _window, cx| {
+                                    this.crop_drag_start = None;
+                                    this.crop_dragging = false;
+                                    cx.notify();
+                                }))
+                                // Scroll zoom centered on cursor (like image preview)
+                                .on_scroll_wheel(cx.listener(move |this, ev: &ScrollWheelEvent, _window, cx| {
+                                    let delta_y: f32 = match ev.delta {
+                                        ScrollDelta::Lines(d) => d.y,
+                                        ScrollDelta::Pixels(d) => d.y / px(40.0),
+                                    };
+                                    let old_zoom = this.wallpaper_crop_zoom;
+                                    let new_zoom = if delta_y > 0.0 {
+                                        (old_zoom / 1.15).max(1.0)
+                                    } else if delta_y < 0.0 {
+                                        (old_zoom * 1.15).min(5.0)
+                                    } else {
+                                        old_zoom
+                                    };
+                                    if (new_zoom - old_zoom).abs() < f32::EPSILON {
+                                        return;
+                                    }
+
+                                    // Cursor-centered zoom: adjust crop position so the point
+                                    // under the cursor stays fixed in image space
+                                    if let Some((iw, ih)) = this.wallpaper_img_size {
+                                        let (ox, oy, _, _) = container_bounds.get();
+                                        let iw = iw as f32;
+                                        let ih = ih as f32;
+
+                                        // Cursor in preview-local coords
+                                        let mx = f32::from(ev.position.x) - ox;
+                                        let my = f32::from(ev.position.y) - oy;
+
+                                        // Cursor position in image-pixel space
+                                        let cursor_img_x = (mx - img_offset_x) / img_scale;
+                                        let cursor_img_y = (my - img_offset_y) / img_scale;
+
+                                        // Old frame in image-pixel space
+                                        let old_cover = base_cover * old_zoom;
+                                        let old_vis_w = win_w / old_cover;
+                                        let old_vis_h = win_h / old_cover;
+                                        let old_range_img_x = (iw - old_vis_w).max(0.0);
+                                        let old_range_img_y = (ih - old_vis_h).max(0.0);
+                                        let old_frame_x = this.wallpaper_crop_x * old_range_img_x;
+                                        let old_frame_y = this.wallpaper_crop_y * old_range_img_y;
+
+                                        // Cursor fraction within old frame
+                                        let frac_x = if old_vis_w > 0.0 { (cursor_img_x - old_frame_x) / old_vis_w } else { 0.5 };
+                                        let frac_y = if old_vis_h > 0.0 { (cursor_img_y - old_frame_y) / old_vis_h } else { 0.5 };
+
+                                        // New frame in image-pixel space
+                                        let new_cover = base_cover * new_zoom;
+                                        let new_vis_w = win_w / new_cover;
+                                        let new_vis_h = win_h / new_cover;
+                                        let new_range_img_x = (iw - new_vis_w).max(0.0);
+                                        let new_range_img_y = (ih - new_vis_h).max(0.0);
+
+                                        // New frame position so cursor stays at same fraction
+                                        let new_frame_x = cursor_img_x - frac_x * new_vis_w;
+                                        let new_frame_y = cursor_img_y - frac_y * new_vis_h;
+
+                                        this.wallpaper_crop_x = if new_range_img_x > 0.0 {
+                                            (new_frame_x / new_range_img_x).clamp(0.0, 1.0)
+                                        } else { 0.5 };
+                                        this.wallpaper_crop_y = if new_range_img_y > 0.0 {
+                                            (new_frame_y / new_range_img_y).clamp(0.0, 1.0)
+                                        } else { 0.5 };
+                                    }
+
+                                    this.wallpaper_crop_zoom = new_zoom;
                                     cx.notify();
                                 })),
                         )
@@ -1605,6 +1803,7 @@ impl Render for AppView {
                                         .child("Confirm")
                                         .on_click(cx.listener(|this, _ev, _window, cx| {
                                             this.crop_picker_open = false;
+                                            this.crop_dragging = false;
                                             this.save_settings();
                                             cx.notify();
                                         })),
@@ -1623,8 +1822,10 @@ impl Render for AppView {
                                         .child("Cancel")
                                         .on_click(cx.listener(|this, _ev, _window, cx| {
                                             this.crop_picker_open = false;
+                                            this.crop_dragging = false;
                                             this.wallpaper_crop_x = 0.5;
                                             this.wallpaper_crop_y = 0.5;
+                                            this.wallpaper_crop_zoom = 1.0;
                                             this.save_settings();
                                             cx.notify();
                                         })),
@@ -2489,10 +2690,13 @@ fn main() {
                         wallpaper_opacity: saved_settings.wallpaper_opacity,
                         wallpaper_crop_x: saved_settings.wallpaper_crop_x,
                         wallpaper_crop_y: saved_settings.wallpaper_crop_y,
+                        wallpaper_crop_zoom: saved_settings.wallpaper_crop_zoom,
                         wallpaper_img_size,
                         crop_picker_open: false,
                         crop_drag_start: None,
                         crop_drag_initial: (0.5, 0.5),
+                        crop_dragging: false,
+                        crop_preview_bounds: std::rc::Rc::new(std::cell::Cell::new((0.0, 0.0, 0.0, 0.0))),
                         toasts: Vec::new(),
                         next_toast_id: 0,
                         _project_subscription: project_sub,

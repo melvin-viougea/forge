@@ -13,27 +13,35 @@ use alacritty_terminal::term::{Config, TermMode};
 use alacritty_terminal::Term;
 use alacritty_terminal::vte::ansi;
 
-/// Captures OSC title change events from the terminal.
+/// Captures terminal events (OSC title changes, bell).
 #[derive(Clone)]
-struct TitleListener {
+struct TermEventListener {
     title: Arc<Mutex<Option<String>>>,
+    bell: Arc<AtomicBool>,
 }
 
-impl EventListener for TitleListener {
+impl EventListener for TermEventListener {
     fn send_event(&self, event: Event) {
-        if let Event::Title(title) = event {
-            *self.title.lock().unwrap() = Some(title);
+        match event {
+            Event::Title(title) => {
+                *self.title.lock().unwrap() = Some(title);
+            }
+            Event::Bell => {
+                self.bell.store(true, Ordering::Relaxed);
+            }
+            _ => {}
         }
     }
 }
 
 pub struct Terminal {
-    term: Arc<Mutex<Term<TitleListener>>>,
+    term: Arc<Mutex<Term<TermEventListener>>>,
     writer: Option<Box<dyn Write + Send>>,
     master_pty: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
     _reader_handle: Option<std::thread::JoinHandle<()>>,
     pub has_new_data: Arc<AtomicBool>,
     osc_title: Arc<Mutex<Option<String>>>,
+    bell: Arc<AtomicBool>,
     pub title: String,
     pub cols: u16,
     pub rows: u16,
@@ -210,7 +218,8 @@ impl Terminal {
             screen_lines: rows as usize,
         };
         let osc_title: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-        let listener = TitleListener { title: osc_title.clone() };
+        let bell: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+        let listener = TermEventListener { title: osc_title.clone(), bell: bell.clone() };
         let term = Term::new(config, &dimensions, listener);
         let term = Arc::new(Mutex::new(term));
 
@@ -245,6 +254,7 @@ impl Terminal {
             _reader_handle: Some(reader_handle),
             has_new_data,
             osc_title,
+            bell,
             title,
             cols,
             rows,
@@ -379,5 +389,10 @@ impl Terminal {
     /// Take the latest OSC title if one was set since last call.
     pub fn take_osc_title(&self) -> Option<String> {
         self.osc_title.lock().unwrap().take()
+    }
+
+    /// Check and clear the bell flag. Returns true if bell was rung since last call.
+    pub fn take_bell(&self) -> bool {
+        self.bell.swap(false, Ordering::Relaxed)
     }
 }

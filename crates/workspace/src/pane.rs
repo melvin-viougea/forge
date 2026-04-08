@@ -11,6 +11,7 @@ pub struct Tab {
     pub detail: String,
     pub view: AnyView,
     pub closable: bool,
+    pub has_notification: bool,
 }
 
 /// Events emitted by Pane
@@ -107,6 +108,7 @@ impl Pane {
             detail,
             view,
             closable,
+            has_notification: false,
         });
         self.active_tab = self.tabs.len() - 1;
         id
@@ -127,12 +129,27 @@ impl Pane {
     pub fn set_active_tab(&mut self, tab_id: usize) {
         if let Some(idx) = self.tabs.iter().position(|t| t.id == tab_id) {
             self.active_tab = idx;
+            self.tabs[idx].has_notification = false;
         }
     }
 
     pub fn set_tab_title(&mut self, tab_id: usize, title: String) {
         if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
             tab.title = title;
+        }
+    }
+
+    pub fn tab_title(&self, tab_id: usize) -> Option<&str> {
+        self.tabs.iter().find(|t| t.id == tab_id).map(|t| t.title.as_str())
+    }
+
+    pub fn active_tab_id(&self) -> Option<usize> {
+        self.tabs.get(self.active_tab).map(|t| t.id)
+    }
+
+    pub fn set_tab_notification(&mut self, tab_id: usize, notify: bool) {
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+            tab.has_notification = notify;
         }
     }
 
@@ -309,6 +326,18 @@ impl Pane {
                                                     })
                                                     .child(div().truncate().child(tab.title.clone())),
                                             )
+                                            // Notification badge (dark blue dot)
+                                            .when(tab.has_notification, |d: Div| {
+                                                d.child(
+                                                    div()
+                                                        .w(px(8.))
+                                                        .h(px(8.))
+                                                        .rounded_full()
+                                                        .bg(theme::blue())
+                                                        .flex_shrink_0()
+                                                        .mx(px(4.))
+                                                )
+                                            })
                                             .when(closable, |d: Div| {
                                                 d.child(
                                                     div()

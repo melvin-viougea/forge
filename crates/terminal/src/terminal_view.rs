@@ -87,6 +87,7 @@ impl Selection {
 
 pub enum TerminalViewEvent {
     TitleChanged(String),
+    Bell,
 }
 
 impl gpui::EventEmitter<TerminalViewEvent> for TerminalView {}
@@ -159,6 +160,10 @@ impl TerminalView {
                                     cx.emit(TerminalViewEvent::TitleChanged(capitalized));
                                 }
                             }
+                        }
+                        // Check for terminal bell (BEL \x07)
+                        if view.terminal.take_bell() {
+                            cx.emit(TerminalViewEvent::Bell);
                         }
                         cx.notify();
                     }
