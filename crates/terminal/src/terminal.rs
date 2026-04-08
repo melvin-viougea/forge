@@ -206,6 +206,37 @@ impl Terminal {
         cmd.env("COLORTERM", "truecolor");
         cmd.env("PROMPT", "%~ %# ");
 
+        // Shell integration: inject precmd hook to emit bell on command completion
+        if shell.contains("zsh") {
+            let home = std::env::var("HOME").unwrap_or_default();
+            let init_dir = PathBuf::from(&home).join(".forge/shell-init");
+            let _ = std::fs::create_dir_all(&init_dir);
+            let zshenv = init_dir.join(".zshenv");
+            // Only write if missing or outdated
+            let expected = "# Forge shell integration — bell on command completion\n\
+                            ZDOTDIR=\"${FORGE_ORIG_ZDOTDIR:-$HOME}\"\n\
+                            [[ -f \"$ZDOTDIR/.zshenv\" ]] && source \"$ZDOTDIR/.zshenv\"\n\
+                            __forge_bell() { printf '\\a' }\n\
+                            precmd_functions+=(__forge_bell)\n";
+            if std::fs::read_to_string(&zshenv).ok().as_deref() != Some(expected) {
+                let _ = std::fs::write(&zshenv, expected);
+            }
+            cmd.env("FORGE_ORIG_ZDOTDIR", std::env::var("ZDOTDIR").unwrap_or(home));
+            cmd.env("ZDOTDIR", init_dir.to_string_lossy().as_ref());
+        } else if shell.contains("bash") {
+            // For bash: append bell to PROMPT_COMMAND
+            let existing = std::env::var("PROMPT_COMMAND").unwrap_or_default();
+            let bell_cmd = "printf '\\a'";
+            if !existing.contains(bell_cmd) {
+                let new_val = if existing.is_empty() {
+                    bell_cmd.to_string()
+                } else {
+                    format!("{};{}", existing, bell_cmd)
+                };
+                cmd.env("PROMPT_COMMAND", &new_val);
+            }
+        }
+
         pair.slave.spawn_command(cmd)?;
 
         let writer = pair.master.take_writer()?;
