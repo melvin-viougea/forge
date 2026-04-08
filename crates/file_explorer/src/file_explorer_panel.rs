@@ -354,42 +354,61 @@ impl Render for FileExplorerPanel {
                             }))
                     }),
             )
-            // Context menu overlay
+            // Context menu with backdrop
             .when_some(context_menu, |d: Stateful<Div>, (pos, target_idx)| {
                 let is_md = target_idx < self.entries.len()
                     && !self.entries[target_idx].entry.is_dir
                     && self.entries[target_idx].entry.name.ends_with(".md");
                 d.child(
                     deferred(
-                        anchored()
-                            .position(pos)
+                        div()
+                            .id("ctx-backdrop")
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full()
+                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _ev: &MouseDownEvent, _window, cx| {
+                                this.context_menu = None;
+                                cx.notify();
+                            }))
+                            .on_mouse_down(MouseButton::Right, cx.listener(|this, _ev: &MouseDownEvent, _window, cx| {
+                                this.context_menu = None;
+                                cx.notify();
+                            }))
                             .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .w(px(180.))
-                                    .bg(colors::surface0())
-                                    .border_1()
-                                    .border_color(colors::surface1())
-                                    .rounded(px(6.))
-                                    .py(px(4.))
-                                    .text_sm()
-                                    .shadow_lg()
-                                    .when(is_md, |d: Div| {
-                                        d.child(render_menu_item("ctx-edit-md", "Edit File", "edit_md", target_idx, cx, colors::blue()))
-                                         .child(div().w_full().h(px(1.)).my(px(4.)).bg(colors::surface1()))
-                                    })
-                                    .child(render_menu_item("ctx-new-file", "New File", "new_file", target_idx, cx, colors::text()))
-                                    .child(render_menu_item("ctx-new-folder", "New Folder", "new_folder", target_idx, cx, colors::text()))
-                                    .child(div().w_full().h(px(1.)).my(px(4.)).bg(colors::surface1()))
-                                    .child(render_menu_item("ctx-copy", "Copy", "copy", target_idx, cx, colors::text()))
-                                    .child(render_menu_item("ctx-cut", "Cut", "cut", target_idx, cx, colors::text()))
-                                    .child(render_menu_item("ctx-paste", "Paste", "paste", target_idx, cx, colors::text()))
-                                    .child(div().w_full().h(px(1.)).my(px(4.)).bg(colors::surface1()))
-                                    .child(render_menu_item("ctx-rename", "Rename", "rename", target_idx, cx, colors::text()))
-                                    .child(div().w_full().h(px(1.)).my(px(4.)).bg(colors::surface1()))
-                                    .child(render_menu_item("ctx-trash", "Move to Trash", "trash", target_idx, cx, colors::text()))
-                                    .child(render_menu_item("ctx-delete", "Delete Permanently", "delete", target_idx, cx, colors::red())),
+                                anchored()
+                                    .position(pos)
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .w(px(180.))
+                                            .bg(colors::surface0())
+                                            .border_1()
+                                            .border_color(colors::surface1())
+                                            .rounded(px(6.))
+                                            .py(px(4.))
+                                            .text_sm()
+                                            .shadow_lg()
+                                            .on_mouse_down(MouseButton::Left, |_ev: &MouseDownEvent, _window, cx| {
+                                                cx.stop_propagation();
+                                            })
+                                            .when(is_md, |d: Div| {
+                                                d.child(render_menu_item("ctx-edit-md", "Edit File", "edit_md", target_idx, cx, colors::blue()))
+                                                 .child(div().w_full().h(px(1.)).my(px(4.)).bg(colors::surface1()))
+                                            })
+                                            .child(render_menu_item("ctx-new-file", "New File", "new_file", target_idx, cx, colors::text()))
+                                            .child(render_menu_item("ctx-new-folder", "New Folder", "new_folder", target_idx, cx, colors::text()))
+                                            .child(div().w_full().h(px(1.)).my(px(4.)).bg(colors::surface1()))
+                                            .child(render_menu_item("ctx-copy", "Copy", "copy", target_idx, cx, colors::text()))
+                                            .child(render_menu_item("ctx-cut", "Cut", "cut", target_idx, cx, colors::text()))
+                                            .child(render_menu_item("ctx-paste", "Paste", "paste", target_idx, cx, colors::text()))
+                                            .child(div().w_full().h(px(1.)).my(px(4.)).bg(colors::surface1()))
+                                            .child(render_menu_item("ctx-rename", "Rename", "rename", target_idx, cx, colors::text()))
+                                            .child(div().w_full().h(px(1.)).my(px(4.)).bg(colors::surface1()))
+                                            .child(render_menu_item("ctx-trash", "Move to Trash", "trash", target_idx, cx, colors::text()))
+                                            .child(render_menu_item("ctx-delete", "Delete Permanently", "delete", target_idx, cx, colors::red())),
+                                    ),
                             ),
                     ),
                 )

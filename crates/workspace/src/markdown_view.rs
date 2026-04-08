@@ -151,17 +151,19 @@ fn parse_blocks(lines: &[&str], start: usize, end: usize) -> (Vec<MdBlock>, usiz
         }
 
         // Ordered list (with nested lists)
-        if line.trim_start().chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false)
-            && line.trim_start().contains(". ")
-        {
-            let base_indent = line.len() - line.trim_start().len();
-            let (items, new_i) = parse_ordered_list(lines, i, end, base_indent);
-            i = new_i;
-            blocks.push(MdBlock::OrderedList(items));
-            continue;
+        if let Some(dot_pos) = line.trim_start().find(". ") {
+            if dot_pos > 0 && line.trim_start()[..dot_pos].chars().all(|c| c.is_ascii_digit()) {
+                let base_indent = line.len() - line.trim_start().len();
+                let (items, new_i) = parse_ordered_list(lines, i, end, base_indent);
+                if new_i > i {
+                    i = new_i;
+                    blocks.push(MdBlock::OrderedList(items));
+                    continue;
+                }
+            }
         }
 
-        // Paragraph
+        // Paragraph (fallback — always advances i to prevent infinite loop)
         let mut para = String::new();
         while i < end && !lines[i].trim().is_empty()
             && !lines[i].starts_with('#')
@@ -176,6 +178,9 @@ fn parse_blocks(lines: &[&str], start: usize, end: usize) -> (Vec<MdBlock>, usiz
         }
         if !para.is_empty() {
             blocks.push(MdBlock::Paragraph(parse_inline(&para)));
+        } else {
+            // Safety: skip any line that no parser matched to avoid infinite loop
+            i += 1;
         }
     }
 

@@ -105,6 +105,8 @@ pub struct TerminalView {
     scroll_acc: f32,
     /// Buffered dead key for composition (e.g. ^ + e → ê)
     dead_key: Option<char>,
+    /// Actual bounds of the terminal content area (origin_x, origin_y) captured at render time
+    content_origin: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
 }
 
 use ide_workspace::theme as colors;
@@ -179,6 +181,7 @@ impl TerminalView {
             detected_title: None,
             scroll_acc: 0.0,
             dead_key: None,
+            content_origin: std::rc::Rc::new(std::cell::Cell::new((0.0, 0.0))),
         }
     }
 }
@@ -190,25 +193,13 @@ const CHAR_WIDTH: f32 = 8.4;
 const LINE_HEIGHT: f32 = 18.0;
 const CONTENT_PADDING: f32 = 8.0;
 
-/// Layout offsets: left dock (200) + pane sidebar (240) for X, titlebar+divider (30) for Y
-const LAYOUT_OFFSET_X: f32 = 200.0 + 240.0;
-const LAYOUT_OFFSET_Y: f32 = 30.0;
-
 impl TerminalView {
     /// Convert a window-relative mouse position to terminal cell (row, col).
     fn mouse_to_cell(&self, pos: Point<Pixels>) -> (usize, usize) {
         let x: f32 = pos.x.into();
         let y: f32 = pos.y.into();
 
-        // Offsets differ between center pane and compact (right panel) mode
-        let (off_x, off_y) = if self.compact {
-            // Right panel: viewport_width - 280 (dock width) for x,
-            // titlebar(29) + commit_panel(~50) + divider(1) + runner_header(28) for y
-            // We approximate since we don't have the exact viewport here
-            (0.0, 0.0) // Will be relative to the terminal div
-        } else {
-            (LAYOUT_OFFSET_X, LAYOUT_OFFSET_Y)
-        };
+        let (off_x, off_y) = self.content_origin.get();
 
         let col = ((x - off_x - CONTENT_PADDING) / CHAR_WIDTH).max(0.0) as usize;
         let row = ((y - off_y - CONTENT_PADDING) / LINE_HEIGHT).max(0.0) as usize;
@@ -653,7 +644,8 @@ impl Render for TerminalView {
                 }
             }))
             // Terminal content
-            .child(
+            .child({
+                let content_origin = self.content_origin.clone();
                 div()
                     .flex_1()
                     .min_w_0()
@@ -663,6 +655,20 @@ impl Render for TerminalView {
                     .p(px(8.))
                     .text_sm()
                     .font_family("MesloLGS NF")
+                    // Capture actual content origin for mouse_to_cell
+                    .child(
+                        canvas(
+                            move |bounds, _window, _cx| {
+                                content_origin.set((
+                                    f32::from(bounds.origin.x),
+                                    f32::from(bounds.origin.y),
+                                ));
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .w_0()
+                        .h_0()
+                    )
                     .children(
                         lines.iter().enumerate().map(move |(idx, line)| {
                             let sel_ref = selection.as_ref();
@@ -672,7 +678,7 @@ impl Render for TerminalView {
                                 render_line_sel(line, idx, sel_ref)
                             }
                         }),
-                    ),
-            )
+                    )
+            })
     }
 }

@@ -269,40 +269,59 @@ impl Render for GitChangesPanel {
             .text_sm()
             .font_family("Berkeley Mono, SF Mono, Menlo, monospace")
             .children(all_entries)
-            // Context menu
+            // Context menu with backdrop
             .when_some(context_menu, |d: Stateful<Div>, (pos, target_idx)| {
                 d.child(
                     deferred(
-                        anchored()
-                            .position(pos)
+                        div()
+                            .id("ctx-backdrop")
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full()
+                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _ev: &MouseDownEvent, _window, cx| {
+                                this.context_menu = None;
+                                cx.notify();
+                            }))
+                            .on_mouse_down(MouseButton::Right, cx.listener(|this, _ev: &MouseDownEvent, _window, cx| {
+                                this.context_menu = None;
+                                cx.notify();
+                            }))
                             .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .w(px(160.))
-                                    .bg(colors::surface0())
-                                    .border_1()
-                                    .border_color(colors::surface1())
-                                    .rounded(px(6.))
-                                    .py(px(4.))
-                                    .text_sm()
-                                    .shadow_lg()
+                                anchored()
+                                    .position(pos)
                                     .child(
                                         div()
-                                            .id("ctx-discard")
                                             .flex()
-                                            .items_center()
-                                            .w_full()
-                                            .h(px(26.))
-                                            .px(px(12.))
-                                            .cursor_pointer()
-                                            .text_color(colors::red())
-                                            .hover(|d| d.bg(colors::surface1()))
-                                            .child("Discard Changes")
-                                            .on_click(cx.listener(move |this, _ev, _window, cx| {
-                                                this.discard_change(target_idx);
-                                                cx.notify();
-                                            })),
+                                            .flex_col()
+                                            .w(px(160.))
+                                            .bg(colors::surface0())
+                                            .border_1()
+                                            .border_color(colors::surface1())
+                                            .rounded(px(6.))
+                                            .py(px(4.))
+                                            .text_sm()
+                                            .shadow_lg()
+                                            .on_mouse_down(MouseButton::Left, |_ev: &MouseDownEvent, _window, cx| {
+                                                cx.stop_propagation();
+                                            })
+                                            .child(
+                                                div()
+                                                    .id("ctx-discard")
+                                                    .flex()
+                                                    .items_center()
+                                                    .w_full()
+                                                    .h(px(26.))
+                                                    .px(px(12.))
+                                                    .cursor_pointer()
+                                                    .text_color(colors::red())
+                                                    .hover(|d| d.bg(colors::surface1()))
+                                                    .child("Discard Changes")
+                                                    .on_click(cx.listener(move |this, _ev, _window, cx| {
+                                                        this.discard_change(target_idx);
+                                                        cx.notify();
+                                                    })),
+                                            ),
                                     ),
                             ),
                     ),
