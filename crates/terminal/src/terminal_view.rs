@@ -90,6 +90,8 @@ pub enum TerminalViewEvent {
     Bell,
     /// Emitted when sustained output starts (command is producing data)
     ActivityStarted,
+    /// Emitted when user types in the terminal
+    UserInput,
 }
 
 impl gpui::EventEmitter<TerminalViewEvent> for TerminalView {}
@@ -116,6 +118,8 @@ pub struct TerminalView {
     last_data_time: Option<std::time::Instant>,
     /// Whether we already notified for the current idle period
     idle_notified: bool,
+    /// Timestamp of terminal creation — ignore activity events during startup
+    created_at: std::time::Instant,
 }
 
 use ide_workspace::theme as colors;
@@ -129,6 +133,7 @@ impl TerminalView {
         let terminal = Terminal::new(title, 80, 24, working_dir).expect("Failed to create terminal");
         let focus_handle = cx.focus_handle();
 
+
         let poll_task = cx.spawn(async |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             loop {
                 cx.background_executor().timer(Duration::from_millis(50)).await;
@@ -137,8 +142,9 @@ impl TerminalView {
                         view.data_burst_count += 1;
                         view.last_data_time = Some(std::time::Instant::now());
 
-                        // Emit activity started after sustained output (3+ consecutive polls)
-                        if view.data_burst_count == 3 {
+                        // Emit activity started after sustained output (2+ consecutive polls)
+                        // Ignore startup output (first 10s)
+                        if view.data_burst_count == 2 && view.created_at.elapsed() >= Duration::from_secs(3) {
                             cx.emit(TerminalViewEvent::ActivityStarted);
                         }
                         view.idle_notified = false;
@@ -178,24 +184,26 @@ impl TerminalView {
                                 }
                             }
                         }
-                        // Check for terminal bell (BEL \x07)
-                        if view.terminal.take_bell() {
+                        // Check for terminal bell (BEL \x07) — ignore during startup
+                        if view.terminal.take_bell() && view.created_at.elapsed() >= Duration::from_secs(3) {
                             cx.emit(TerminalViewEvent::Bell);
                         }
                         cx.notify();
                     } else if view.data_burst_count > 0 {
                         if let Some(last) = view.last_data_time {
-                            // Idle detection: sustained output (3+ polls) then 2s silence → Done
-                            if !view.idle_notified && view.data_burst_count >= 3
-                                && last.elapsed() >= Duration::from_secs(2)
+                            // Idle detection: sustained output (2+ polls) then silence → Done
+                            if !view.idle_notified && view.data_burst_count >= 2
+                                && last.elapsed() >= Duration::from_millis(500)
                             {
-                                cx.emit(TerminalViewEvent::Bell);
+                                if view.created_at.elapsed() >= Duration::from_secs(3) {
+                                    cx.emit(TerminalViewEvent::Bell);
+                                }
                                 view.idle_notified = true;
                                 view.data_burst_count = 0;
                                 view.last_data_time = None;
                             }
                             // Short burst that didn't reach threshold — reset after 500ms
-                            else if view.data_burst_count < 3
+                            else if view.data_burst_count < 2
                                 && last.elapsed() >= Duration::from_millis(500)
                             {
                                 view.data_burst_count = 0;
@@ -225,6 +233,7 @@ impl TerminalView {
             data_burst_count: 0,
             last_data_time: None,
             idle_notified: true, // start as true to avoid notification on terminal open
+            created_at: std::time::Instant::now(),
         }
     }
 }
@@ -518,6 +527,9 @@ impl Render for TerminalView {
             // ── Mouse: selection ──────────────────────────────
             .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, window, cx| {
                 this.focus_handle.focus(window);
+                cx.emit(TerminalViewEvent::UserInput);
+                this.data_burst_count = 0;
+                this.last_data_time = None;
                 let (row, col) = this.mouse_to_cell(ev.position);
                 this.selection = Some(Selection {
                     start: (row, col),
@@ -613,10 +625,14 @@ impl Render for TerminalView {
                     }
                 }
 
-                // Any regular key press clears the selection
+                // Any regular key press clears the selection and signals user input
                 if this.selection.is_some() {
                     this.selection = None;
                 }
+                cx.emit(TerminalViewEvent::UserInput);
+                // Reset burst count so keystroke echo doesn't trigger ActivityStarted
+                this.data_burst_count = 0;
+                this.last_data_time = None;
 
                 let handled = match ev.keystroke.key.as_str() {
                     "enter" | "backspace" | "tab" | "escape" | "space"

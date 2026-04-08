@@ -25,6 +25,7 @@ pub struct Tab {
     pub view: AnyView,
     pub closable: bool,
     pub activity: TabActivity,
+    pub is_claude: bool,
 }
 
 /// Events emitted by Pane
@@ -122,6 +123,7 @@ impl Pane {
             view,
             closable,
             activity: TabActivity::Idle,
+            is_claude: false,
         });
         self.active_tab = self.tabs.len() - 1;
         id
@@ -166,9 +168,25 @@ impl Pane {
         }
     }
 
+    pub fn tab_activity(&self, tab_id: usize) -> Option<TabActivity> {
+        self.tabs.iter().find(|t| t.id == tab_id).map(|t| t.activity)
+    }
+
     pub fn set_tab_activity(&mut self, tab_id: usize, activity: TabActivity) {
         if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
             tab.activity = activity;
+        }
+    }
+
+    pub fn set_tab_icon(&mut self, tab_id: usize, icon: &'static str) {
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+            tab.icon = icon;
+        }
+    }
+
+    pub fn set_tab_claude(&mut self, tab_id: usize, is_claude: bool) {
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+            tab.is_claude = is_claude;
         }
     }
 
@@ -345,22 +363,22 @@ impl Pane {
                                                     })
                                                     .child(div().truncate().child(tab.title.clone())),
                                             )
-                                            // Activity indicator (on inactive tabs only)
-                                            // Idle: subtle grey circle outline
-                                            .when(!is_active && tab.activity == TabActivity::Idle, |d: Div| {
+                                            // Activity indicator (Claude tabs only)
+                                            // Idle: subtle blue circle outline
+                                            .when(tab.is_claude && tab.activity == TabActivity::Idle, |d: Div| {
                                                 d.child(
                                                     div()
                                                         .w(px(8.))
                                                         .h(px(8.))
                                                         .rounded_full()
                                                         .border_1()
-                                                        .border_color(theme::overlay())
+                                                        .border_color(theme::blue())
                                                         .flex_shrink_0()
                                                         .mx(px(4.))
                                                 )
                                             })
                                             // Active: pulsating blue ring
-                                            .when(tab.activity == TabActivity::Active, |d: Div| {
+                                            .when(tab.is_claude && tab.activity == TabActivity::Active, |d: Div| {
                                                 d.child(
                                                     div()
                                                         .w(px(8.))
@@ -381,7 +399,7 @@ impl Pane {
                                                 )
                                             })
                                             // Done: solid blue dot
-                                            .when(tab.activity == TabActivity::Done, |d: Div| {
+                                            .when(tab.is_claude && tab.activity == TabActivity::Done, |d: Div| {
                                                 d.child(
                                                     div()
                                                         .w(px(8.))

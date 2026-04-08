@@ -21,6 +21,8 @@ struct ProjectPanel {
     active_project: Option<usize>,
     order: Vec<usize>,
     drop_indicator: Option<usize>,
+    /// Per-project agent activity counts: (idle, active, done)
+    activity_counts: std::collections::HashMap<usize, (usize, usize, usize)>,
 }
 
 impl EventEmitter<ProjectPanelEvent> for ProjectPanel {}
@@ -86,6 +88,7 @@ impl ProjectPanel {
             active_project: None,
             order: Vec::new(),
             drop_indicator: None,
+            activity_counts: std::collections::HashMap::new(),
         }
     }
 }
@@ -220,16 +223,63 @@ impl Render for ProjectPanel {
                                             cx.notify();
                                         }
                                     }))
-                                    .child(
+                                    .child({
+                                        let counts = self.activity_counts.get(&actual_idx).copied().unwrap_or((0, 0, 0));
+                                        let (idle, active, done) = counts;
+                                        // Colors: white on active blue card, themed on inactive
+                                        let dot_color = if is_active { gpui::rgb(0xffffffcc) } else { gpui::rgb(0x5b9bf5) };
+                                        let text_color = if is_active { gpui::rgb(0xffffffaa) } else { colors::subtext() };
                                         div()
                                             .flex_1()
                                             .min_w(px(0.))
-                                            .truncate()
-                                            .text_sm()
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(if is_active { gpui::rgb(0xffffff) } else { colors::text() })
-                                            .child(project_name),
-                                    )
+                                            .flex()
+                                            .flex_col()
+                                            .gap(px(3.))
+                                            .child(
+                                                div()
+                                                    .truncate()
+                                                    .text_sm()
+                                                    .font_weight(FontWeight::BOLD)
+                                                    .text_color(if is_active { gpui::rgb(0xffffff) } else { colors::text() })
+                                                    .child(project_name),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .flex_row()
+                                                    .items_center()
+                                                    .gap(px(8.))
+                                                    .text_xs()
+                                                    .text_color(text_color)
+                                                    // Idle: circle outline + count
+                                                    .child(
+                                                        div().flex().flex_row().items_center().gap(px(3.))
+                                                            .child(
+                                                                div().w(px(6.)).h(px(6.)).rounded_full()
+                                                                    .border_1().border_color(dot_color)
+                                                            )
+                                                            .child(format!("{}", idle))
+                                                    )
+                                                    // Active: thick ring + count
+                                                    .child(
+                                                        div().flex().flex_row().items_center().gap(px(3.))
+                                                            .child(
+                                                                div().w(px(6.)).h(px(6.)).rounded_full()
+                                                                    .border_2().border_color(dot_color)
+                                                            )
+                                                            .child(format!("{}", active))
+                                                    )
+                                                    // Done: solid dot + count
+                                                    .child(
+                                                        div().flex().flex_row().items_center().gap(px(3.))
+                                                            .child(
+                                                                div().w(px(6.)).h(px(6.)).rounded_full()
+                                                                    .bg(dot_color)
+                                                            )
+                                                            .child(format!("{}", done))
+                                                    )
+                                            )
+                                    })
                                     .when(count > 1, |d: Stateful<Div>| {
                                         d.child(
                                             div()
@@ -805,6 +855,29 @@ fn fix_image_orientation(path: &std::path::Path) -> PathBuf {
 }
 
 impl AppView {
+    fn sync_activity_counts(&self, cx: &mut App) {
+        let mut counts = std::collections::HashMap::new();
+        for (idx, state) in self.project_states.iter().enumerate() {
+            let pane = state.pane.read(cx);
+            let mut idle = 0usize;
+            let mut active = 0usize;
+            let mut done = 0usize;
+            for tab in &pane.tabs {
+                if !tab.is_claude { continue; }
+                match tab.activity {
+                    TabActivity::Idle => idle += 1,
+                    TabActivity::Active => active += 1,
+                    TabActivity::Done => done += 1,
+                }
+            }
+            counts.insert(idx, (idle, active, done));
+        }
+        self.project_panel.update(cx, |panel, cx| {
+            panel.activity_counts = counts;
+            cx.notify();
+        });
+    }
+
     fn save_session(&self, cx: &App) {
         // Save paths in display order
         let panel = self.project_panel.read(cx);
@@ -1088,12 +1161,16 @@ impl AppView {
                                 TerminalViewEvent::TitleChanged(new_title) => {
                                     pane_entity.update(cx, |pane, cx| {
                                         pane.set_tab_title(tab_id, new_title.clone());
+                                        if new_title == "Claude" {
+                                            pane.set_tab_icon(tab_id, "crates/app/assets/claude.svg");
+                                            pane.set_tab_claude(tab_id, true);
+                                        }
                                         cx.notify();
                                     });
                                 }
                                 TerminalViewEvent::Bell => {
                                     pane_entity.update(cx, |pane, cx| {
-                                        if pane.active_tab_id() != Some(tab_id) {
+                                        if pane.tab_activity(tab_id) == Some(TabActivity::Active) {
                                             pane.set_tab_activity(tab_id, TabActivity::Done);
                                             cx.notify();
                                         }
@@ -1101,10 +1178,14 @@ impl AppView {
                                 }
                                 TerminalViewEvent::ActivityStarted => {
                                     pane_entity.update(cx, |pane, cx| {
-                                        if pane.active_tab_id() != Some(tab_id) {
-                                            pane.set_tab_activity(tab_id, TabActivity::Active);
-                                            cx.notify();
-                                        }
+                                        pane.set_tab_activity(tab_id, TabActivity::Active);
+                                        cx.notify();
+                                    });
+                                }
+                                TerminalViewEvent::UserInput => {
+                                    pane_entity.update(cx, |pane, cx| {
+                                        pane.set_tab_activity(tab_id, TabActivity::Idle);
+                                        cx.notify();
                                     });
                                 }
                             }
@@ -1122,10 +1203,14 @@ impl AppView {
         self.terminal_count += 1;
         let project_path = path.clone();
         let detail = shorten_path(&project_path);
-        let term_title = format!("zsh {}", self.terminal_count);
+        let is_claude = auto_cmd.is_some();
+        let term_title = if is_claude { "Claude".to_string() } else { format!("zsh {}", self.terminal_count) };
+        let term_icon = if is_claude { "crates/app/assets/claude.svg" } else { "crates/app/assets/terminal.svg" };
         let terminal_view = cx.new(|cx| TerminalView::new_in(term_title.clone(), Some(project_path), cx));
         let tab_id = pane.update(cx, |p, _cx| {
-            p.add_tab(term_title, "crates/app/assets/terminal.svg", detail, AnyView::from(terminal_view.clone()), true)
+            let id = p.add_tab(term_title, term_icon, detail, AnyView::from(terminal_view.clone()), true);
+            if is_claude { p.set_tab_claude(id, true); }
+            id
         });
         // Subscribe to OSC title changes
         let pane_for_title = pane.clone();
@@ -1134,12 +1219,16 @@ impl AppView {
                 TerminalViewEvent::TitleChanged(new_title) => {
                     pane_for_title.update(cx, |pane, cx| {
                         pane.set_tab_title(tab_id, new_title.clone());
+                        if new_title == "Claude" {
+                            pane.set_tab_icon(tab_id, "crates/app/assets/claude.svg");
+                            pane.set_tab_claude(tab_id, true);
+                        }
                         cx.notify();
                     });
                 }
                 TerminalViewEvent::Bell => {
                     pane_for_title.update(cx, |pane, cx| {
-                        if pane.active_tab_id() != Some(tab_id) {
+                        if pane.tab_activity(tab_id) == Some(TabActivity::Active) {
                             pane.set_tab_activity(tab_id, TabActivity::Done);
                             cx.notify();
                         }
@@ -1147,10 +1236,14 @@ impl AppView {
                 }
                 TerminalViewEvent::ActivityStarted => {
                     pane_for_title.update(cx, |pane, cx| {
-                        if pane.active_tab_id() != Some(tab_id) {
-                            pane.set_tab_activity(tab_id, TabActivity::Active);
-                            cx.notify();
-                        }
+                        pane.set_tab_activity(tab_id, TabActivity::Active);
+                        cx.notify();
+                    });
+                }
+                TerminalViewEvent::UserInput => {
+                    pane_for_title.update(cx, |pane, cx| {
+                        pane.set_tab_activity(tab_id, TabActivity::Idle);
+                        cx.notify();
                     });
                 }
             }
@@ -1354,6 +1447,9 @@ impl AppView {
 
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Sync agent activity counts to project panel
+        self.sync_activity_counts(cx);
+
         // Update layout dimensions global so terminals can compute their actual size
         {
             let ws = self.workspace.read(cx);
@@ -2304,6 +2400,7 @@ impl AssetSource for EmbeddedAssets {
             "crates/app/assets/markdown.svg" => Ok(Some(std::borrow::Cow::Borrowed(include_bytes!("../assets/markdown.svg")))),
             "crates/app/assets/git-push.svg" => Ok(Some(std::borrow::Cow::Borrowed(include_bytes!("../assets/git-push.svg")))),
             "crates/app/assets/image.svg" => Ok(Some(std::borrow::Cow::Borrowed(include_bytes!("../assets/image.svg")))),
+            "crates/app/assets/claude.svg" => Ok(Some(std::borrow::Cow::Borrowed(include_bytes!("../assets/claude.svg")))),
             _ => Ok(None),
         }
     }
