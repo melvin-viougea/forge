@@ -1,11 +1,13 @@
 pub mod dock;
 pub mod file_view;
+pub mod image_view;
 pub mod markdown_view;
 pub mod pane;
 pub mod workspace;
 
 pub use dock::*;
 pub use file_view::*;
+pub use image_view::*;
 pub use markdown_view::*;
 pub use pane::*;
 pub use workspace::*;

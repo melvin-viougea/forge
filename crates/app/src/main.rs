@@ -10,7 +10,7 @@ use std::time::Duration;
 use ide_file_explorer::{FileExplorerPanel, FileExplorerEvent};
 use ide_git_panel::{CommitPanel, CommitDiffView, GitChangesPanel, GitChangesEvent, GitLogPanel, GitLogEvent, RunnerEvent};
 use ide_workspace::theme::{self, ThemeName};
-use ide_workspace::{FileView, FileViewEvent, MarkdownPreviewView};
+use ide_workspace::{FileView, FileViewEvent, ImagePreviewView, MarkdownPreviewView};
 use ide_terminal::{LayoutDimensions, TerminalView, TerminalViewEvent};
 use ide_workspace::{IdeWorkspace, Pane, PaneEvent, WorkspaceEvent};
 
@@ -943,6 +943,14 @@ impl AppView {
             return;
         }
 
+        // Image files open in preview (read-only)
+        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            if matches!(ext, "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "svg" | "ico") {
+                self.open_image_preview(pane, path, cx);
+                return;
+            }
+        }
+
         self.open_file_editor(pane.clone(), path, cx);
     }
 
@@ -1008,6 +1016,32 @@ impl AppView {
 
         pane.update(cx, |p, _cx| {
             p.add_tab(title, icon, detail, AnyView::from(md_view), true);
+        });
+        cx.notify();
+    }
+
+    fn open_image_preview(&mut self, pane: &Entity<Pane>, path: PathBuf, cx: &mut Context<Self>) {
+        let detail = format!("image:{}", path.to_string_lossy());
+
+        let existing = pane.read(cx).tabs.iter().position(|tab| tab.detail == detail);
+        if let Some(idx) = existing {
+            let tab_id = pane.read(cx).tabs[idx].id;
+            pane.update(cx, |p, cx| {
+                p.set_active_tab(tab_id);
+                cx.notify();
+            });
+            return;
+        }
+
+        let filename = path.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "image".to_string());
+
+        let icon = "crates/app/assets/image.svg";
+        let img_view = cx.new(|_cx| ImagePreviewView::new(path));
+
+        pane.update(cx, |p, _cx| {
+            p.add_tab(filename, icon, detail, AnyView::from(img_view), true);
         });
         cx.notify();
     }
@@ -2052,6 +2086,7 @@ impl AssetSource for EmbeddedAssets {
             "crates/app/assets/git-pull.svg" => Ok(Some(std::borrow::Cow::Borrowed(include_bytes!("../assets/git-pull.svg")))),
             "crates/app/assets/markdown.svg" => Ok(Some(std::borrow::Cow::Borrowed(include_bytes!("../assets/markdown.svg")))),
             "crates/app/assets/git-push.svg" => Ok(Some(std::borrow::Cow::Borrowed(include_bytes!("../assets/git-push.svg")))),
+            "crates/app/assets/image.svg" => Ok(Some(std::borrow::Cow::Borrowed(include_bytes!("../assets/image.svg")))),
             _ => Ok(None),
         }
     }

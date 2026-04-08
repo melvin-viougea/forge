@@ -27,6 +27,11 @@ impl FileEntry {
             "crates/app/assets/folder.svg"
         } else if self.name.ends_with(".md") {
             "crates/app/assets/markdown.svg"
+        } else if matches!(
+            self.name.rsplit('.').next().unwrap_or(""),
+            "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "svg" | "ico"
+        ) {
+            "crates/app/assets/image.svg"
         } else {
             "crates/app/assets/file.svg"
         }
