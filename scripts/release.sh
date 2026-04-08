@@ -1,9 +1,13 @@
 #!/bin/bash
 set -e
 
-# Usage: ./scripts/release.sh 0.2.0 "Description of changes"
+# Usage: ./scripts/release.sh 1.2.0 "Description of changes"
 VERSION="${1:?Usage: ./scripts/release.sh <version> <description>}"
 DESCRIPTION="${2:-Release v$VERSION}"
+
+echo "==> Bumping version to $VERSION..."
+# Update the single source of truth: workspace Cargo.toml
+sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
 
 echo "==> Building Forge v$VERSION (release)..."
 cargo build --release
@@ -53,11 +57,3 @@ gh release create "v$VERSION" \
 
 echo "==> Done! Release v$VERSION published."
 echo "    https://github.com/melvin-viougea/forge/releases/tag/v$VERSION"
-
-# Pour toi (publier une mise à jour) :
-# 1. Fais tes modifications + commit
-# 2. Met à jour la version dans updater.rs (CURRENT_VERSION)
-# 3. Lance le script de release :
-# ./scripts/release.sh 0.2.0 "Description des changements"
-#
-# xattr -cr /Applications/Forge.app
