@@ -4,6 +4,38 @@ use std::time::Duration;
 
 use crate::terminal::{CellStyle, TermColor, Terminal, TerminalLine};
 
+// ── Dead key composition for macOS (e.g. French AZERTY: ^ + e → ê) ──
+
+fn is_dead_key(ch: char) -> bool {
+    matches!(ch, '^' | '¨' | '`' | '~' | '´')
+}
+
+fn compose_dead_key(dead: char, base: char) -> Option<char> {
+    match (dead, base) {
+        ('^', 'a') => Some('â'), ('^', 'e') => Some('ê'), ('^', 'i') => Some('î'),
+        ('^', 'o') => Some('ô'), ('^', 'u') => Some('û'),
+        ('^', 'A') => Some('Â'), ('^', 'E') => Some('Ê'), ('^', 'I') => Some('Î'),
+        ('^', 'O') => Some('Ô'), ('^', 'U') => Some('Û'),
+        ('¨', 'a') => Some('ä'), ('¨', 'e') => Some('ë'), ('¨', 'i') => Some('ï'),
+        ('¨', 'o') => Some('ö'), ('¨', 'u') => Some('ü'), ('¨', 'y') => Some('ÿ'),
+        ('¨', 'A') => Some('Ä'), ('¨', 'E') => Some('Ë'), ('¨', 'I') => Some('Ï'),
+        ('¨', 'O') => Some('Ö'), ('¨', 'U') => Some('Ü'), ('¨', 'Y') => Some('Ÿ'),
+        ('`', 'a') => Some('à'), ('`', 'e') => Some('è'), ('`', 'i') => Some('ì'),
+        ('`', 'o') => Some('ò'), ('`', 'u') => Some('ù'),
+        ('`', 'A') => Some('À'), ('`', 'E') => Some('È'), ('`', 'I') => Some('Ì'),
+        ('`', 'O') => Some('Ò'), ('`', 'U') => Some('Ù'),
+        ('~', 'a') => Some('ã'), ('~', 'n') => Some('ñ'), ('~', 'o') => Some('õ'),
+        ('~', 'A') => Some('Ã'), ('~', 'N') => Some('Ñ'), ('~', 'O') => Some('Õ'),
+        ('´', 'a') => Some('á'), ('´', 'e') => Some('é'), ('´', 'i') => Some('í'),
+        ('´', 'o') => Some('ó'), ('´', 'u') => Some('ú'), ('´', 'y') => Some('ý'),
+        ('´', 'A') => Some('Á'), ('´', 'E') => Some('É'), ('´', 'I') => Some('Í'),
+        ('´', 'O') => Some('Ó'), ('´', 'U') => Some('Ú'), ('´', 'Y') => Some('Ý'),
+        // Same dead key twice produces the literal character
+        (d, b) if d == b => Some(d),
+        _ => None,
+    }
+}
+
 // ── Layout dimensions (shared via Global) ───────────────────
 
 /// Stores current layout widths so the terminal can compute its actual available space.
@@ -71,6 +103,8 @@ pub struct TerminalView {
     pub compact: bool,
     detected_title: Option<String>,
     scroll_acc: f32,
+    /// Buffered dead key for composition (e.g. ^ + e → ê)
+    dead_key: Option<char>,
 }
 
 use ide_workspace::theme as colors;
@@ -144,6 +178,7 @@ impl TerminalView {
             compact: false,
             detected_title: None,
             scroll_acc: 0.0,
+            dead_key: None,
         }
     }
 }
@@ -550,18 +585,29 @@ impl Render for TerminalView {
                 }
 
                 let handled = match ev.keystroke.key.as_str() {
-                    "enter" => { this.terminal.write_input(b"\r"); true }
-                    "backspace" => { this.terminal.write_input(b"\x7f"); true }
-                    "tab" => { this.terminal.write_input(b"\t"); true }
-                    "escape" => { this.terminal.write_input(b"\x1b"); true }
-                    "space" => { this.terminal.write_input(b" "); true }
-                    "up" => { this.terminal.write_input(b"\x1b[A"); true }
-                    "down" => { this.terminal.write_input(b"\x1b[B"); true }
-                    "left" => { this.terminal.write_input(b"\x1b[D"); true }
-                    "right" => { this.terminal.write_input(b"\x1b[C"); true }
-                    "delete" => { this.terminal.write_input(b"\x1b[3~"); true }
-                    "home" => { this.terminal.write_input(b"\x1b[H"); true }
-                    "end" => { this.terminal.write_input(b"\x1b[F"); true }
+                    "enter" | "backspace" | "tab" | "escape" | "space"
+                    | "up" | "down" | "left" | "right" | "delete" | "home" | "end" => {
+                        // Flush pending dead key before special keys
+                        if let Some(dead) = this.dead_key.take() {
+                            let mut buf = [0u8; 4];
+                            this.terminal.write_input(dead.encode_utf8(&mut buf).as_bytes());
+                        }
+                        match ev.keystroke.key.as_str() {
+                            "backspace" => this.terminal.write_input(b"\x7f"),
+                            "tab" => this.terminal.write_input(b"\t"),
+                            "escape" => this.terminal.write_input(b"\x1b"),
+                            "space" => this.terminal.write_input(b" "),
+                            "up" => this.terminal.write_input(b"\x1b[A"),
+                            "down" => this.terminal.write_input(b"\x1b[B"),
+                            "left" => this.terminal.write_input(b"\x1b[D"),
+                            "right" => this.terminal.write_input(b"\x1b[C"),
+                            "delete" => this.terminal.write_input(b"\x1b[3~"),
+                            "home" => this.terminal.write_input(b"\x1b[H"),
+                            "end" => this.terminal.write_input(b"\x1b[F"),
+                            _ /* enter */ => this.terminal.write_input(b"\r"),
+                        }
+                        true
+                    }
                     _ => {
                         if ev.keystroke.modifiers.control {
                             let ch = ev.keystroke.key.chars().next().unwrap_or('c');
@@ -574,7 +620,24 @@ impl Render for TerminalView {
                             }
                         } else if let Some(key_char) = &ev.keystroke.key_char {
                             if !ev.keystroke.modifiers.platform {
-                                this.terminal.write_input(key_char.as_bytes());
+                                let ch = key_char.chars().next().unwrap_or('\0');
+                                if let Some(dead) = this.dead_key.take() {
+                                    // Try to compose dead key + current char
+                                    if let Some(composed) = compose_dead_key(dead, ch) {
+                                        let mut buf = [0u8; 4];
+                                        this.terminal.write_input(composed.encode_utf8(&mut buf).as_bytes());
+                                    } else {
+                                        // Can't compose: send both
+                                        let mut buf = [0u8; 4];
+                                        this.terminal.write_input(dead.encode_utf8(&mut buf).as_bytes());
+                                        this.terminal.write_input(key_char.as_bytes());
+                                    }
+                                } else if is_dead_key(ch) && key_char.chars().count() == 1 {
+                                    // Buffer the dead key, don't send yet
+                                    this.dead_key = Some(ch);
+                                } else {
+                                    this.terminal.write_input(key_char.as_bytes());
+                                }
                                 true
                             } else {
                                 false

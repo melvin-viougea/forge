@@ -289,7 +289,7 @@ impl Pane {
                                                     .flex_row()
                                                     .items_center()
                                                     .gap(px(4.))
-                                                    .truncate()
+                                                    .overflow_hidden()
                                                     .text_sm()
                                                     .font_weight(FontWeight::BOLD)
                                                     .text_color(if is_active { theme::text() } else { theme::subtext() })
@@ -298,13 +298,16 @@ impl Pane {
                                                             svg()
                                                                 .path(tab.icon)
                                                                 .size(px(14.))
+                                                                .flex_shrink_0()
                                                                 .text_color(if is_active { theme::blue() } else { theme::subtext() })
                                                         )
                                                     })
                                                     .when(!tab.icon.ends_with(".svg"), |d: Div| {
-                                                        d.child(tab.icon)
+                                                        d.child(
+                                                            div().flex_shrink_0().child(tab.icon)
+                                                        )
                                                     })
-                                                    .child(tab.title.clone()),
+                                                    .child(div().truncate().child(tab.title.clone())),
                                             )
                                             .when(closable, |d: Div| {
                                                 d.child(

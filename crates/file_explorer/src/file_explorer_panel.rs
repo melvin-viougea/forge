@@ -319,6 +319,7 @@ impl Render for FileExplorerPanel {
                                 svg()
                                     .path(icon_svg)
                                     .size(px(14.))
+                                    .flex_shrink_0()
                                     .text_color(colors::subtext()),
                             )
                             .child(
