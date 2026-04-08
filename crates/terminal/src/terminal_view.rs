@@ -108,6 +108,12 @@ pub struct TerminalView {
     dead_key: Option<char>,
     /// Actual bounds of the terminal content area (origin_x, origin_y) captured at render time
     content_origin: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
+    /// Idle detection: count of consecutive polls with data (proxy for output burst length)
+    data_burst_count: u32,
+    /// Instant of last received data
+    last_data_time: Option<std::time::Instant>,
+    /// Whether we already notified for the current idle period
+    idle_notified: bool,
 }
 
 use ide_workspace::theme as colors;
@@ -126,6 +132,11 @@ impl TerminalView {
                 cx.background_executor().timer(Duration::from_millis(50)).await;
                 let result = this.update(cx, |view, cx| {
                     if view.terminal.check_and_clear_new_data() {
+                        // Track activity burst for idle detection
+                        view.data_burst_count += 1;
+                        view.last_data_time = Some(std::time::Instant::now());
+                        view.idle_notified = false;
+
                         // Check for OSC title changes from the terminal
                         if let Some(osc_title) = view.terminal.take_osc_title() {
                             // Strip user@host: prefix if present
@@ -166,6 +177,17 @@ impl TerminalView {
                             cx.emit(TerminalViewEvent::Bell);
                         }
                         cx.notify();
+                    } else if let Some(last) = view.last_data_time {
+                        // Idle detection: if terminal had significant output (>=5 polls = 250ms+)
+                        // and has been silent for 2+ seconds, emit bell notification
+                        if !view.idle_notified && view.data_burst_count >= 5
+                            && last.elapsed() >= Duration::from_secs(2)
+                        {
+                            cx.emit(TerminalViewEvent::Bell);
+                            view.idle_notified = true;
+                            view.data_burst_count = 0;
+                            view.last_data_time = None;
+                        }
                     }
                 });
                 if result.is_err() {
@@ -187,6 +209,9 @@ impl TerminalView {
             scroll_acc: 0.0,
             dead_key: None,
             content_origin: std::rc::Rc::new(std::cell::Cell::new((0.0, 0.0))),
+            data_burst_count: 0,
+            last_data_time: None,
+            idle_notified: true, // start as true to avoid notification on terminal open
         }
     }
 }
