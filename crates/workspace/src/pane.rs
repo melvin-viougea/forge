@@ -1,7 +1,20 @@
 use gpui::*;
 use gpui::prelude::*;
 
+use std::time::Duration;
+
 use crate::theme;
+
+/// Activity state for a tab indicator
+#[derive(Clone, Copy, PartialEq)]
+pub enum TabActivity {
+    /// No indicator
+    Idle,
+    /// Pulsating ring — command/output in progress
+    Active,
+    /// Solid dot — output finished, tab not yet viewed
+    Done,
+}
 
 /// A single tab in a pane
 pub struct Tab {
@@ -11,7 +24,7 @@ pub struct Tab {
     pub detail: String,
     pub view: AnyView,
     pub closable: bool,
-    pub has_notification: bool,
+    pub activity: TabActivity,
 }
 
 /// Events emitted by Pane
@@ -108,7 +121,7 @@ impl Pane {
             detail,
             view,
             closable,
-            has_notification: false,
+            activity: TabActivity::Idle,
         });
         self.active_tab = self.tabs.len() - 1;
         id
@@ -129,7 +142,7 @@ impl Pane {
     pub fn set_active_tab(&mut self, tab_id: usize) {
         if let Some(idx) = self.tabs.iter().position(|t| t.id == tab_id) {
             self.active_tab = idx;
-            self.tabs[idx].has_notification = false;
+            self.tabs[idx].activity = TabActivity::Idle;
         }
     }
 
@@ -149,7 +162,13 @@ impl Pane {
 
     pub fn set_tab_notification(&mut self, tab_id: usize, notify: bool) {
         if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
-            tab.has_notification = notify;
+            tab.activity = if notify { TabActivity::Done } else { TabActivity::Idle };
+        }
+    }
+
+    pub fn set_tab_activity(&mut self, tab_id: usize, activity: TabActivity) {
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+            tab.activity = activity;
         }
     }
 
@@ -326,8 +345,28 @@ impl Pane {
                                                     })
                                                     .child(div().truncate().child(tab.title.clone())),
                                             )
-                                            // Notification badge (dark blue dot)
-                                            .when(tab.has_notification, |d: Div| {
+                                            // Activity indicator: pulsating ring (Active) or solid dot (Done)
+                                            .when(tab.activity == TabActivity::Active, |d: Div| {
+                                                d.child(
+                                                    div()
+                                                        .w(px(8.))
+                                                        .h(px(8.))
+                                                        .rounded_full()
+                                                        .border_2()
+                                                        .border_color(theme::blue())
+                                                        .flex_shrink_0()
+                                                        .mx(px(4.))
+                                                        .with_animation(
+                                                            ElementId::Name(format!("tab-spinner-{}", tab_id).into()),
+                                                            Animation::new(Duration::from_millis(1200)).repeat(),
+                                                            |el, progress| {
+                                                                let opacity = 0.3 + 0.7 * (progress * std::f32::consts::TAU).sin().abs();
+                                                                el.opacity(opacity)
+                                                            }
+                                                        )
+                                                )
+                                            })
+                                            .when(tab.activity == TabActivity::Done, |d: Div| {
                                                 d.child(
                                                     div()
                                                         .w(px(8.))

@@ -12,7 +12,7 @@ use ide_git_panel::{CommitPanel, CommitDiffView, GitChangesPanel, GitChangesEven
 use ide_workspace::theme::{self, ThemeName};
 use ide_workspace::{FileView, FileViewEvent, ImagePreviewView, MarkdownPreviewView};
 use ide_terminal::{LayoutDimensions, TerminalView, TerminalViewEvent};
-use ide_workspace::{IdeWorkspace, Pane, PaneEvent, WorkspaceEvent};
+use ide_workspace::{IdeWorkspace, Pane, PaneEvent, TabActivity, WorkspaceEvent};
 
 // ── Project Panel (left sidebar) ─────────────────────────────
 
@@ -1094,7 +1094,15 @@ impl AppView {
                                 TerminalViewEvent::Bell => {
                                     pane_entity.update(cx, |pane, cx| {
                                         if pane.active_tab_id() != Some(tab_id) {
-                                            pane.set_tab_notification(tab_id, true);
+                                            pane.set_tab_activity(tab_id, TabActivity::Done);
+                                            cx.notify();
+                                        }
+                                    });
+                                }
+                                TerminalViewEvent::ActivityStarted => {
+                                    pane_entity.update(cx, |pane, cx| {
+                                        if pane.active_tab_id() != Some(tab_id) {
+                                            pane.set_tab_activity(tab_id, TabActivity::Active);
                                             cx.notify();
                                         }
                                     });
@@ -1132,7 +1140,15 @@ impl AppView {
                 TerminalViewEvent::Bell => {
                     pane_for_title.update(cx, |pane, cx| {
                         if pane.active_tab_id() != Some(tab_id) {
-                            pane.set_tab_notification(tab_id, true);
+                            pane.set_tab_activity(tab_id, TabActivity::Done);
+                            cx.notify();
+                        }
+                    });
+                }
+                TerminalViewEvent::ActivityStarted => {
+                    pane_for_title.update(cx, |pane, cx| {
+                        if pane.active_tab_id() != Some(tab_id) {
+                            pane.set_tab_activity(tab_id, TabActivity::Active);
                             cx.notify();
                         }
                     });

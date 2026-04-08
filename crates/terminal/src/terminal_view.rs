@@ -88,6 +88,8 @@ impl Selection {
 pub enum TerminalViewEvent {
     TitleChanged(String),
     Bell,
+    /// Emitted when sustained output starts (command is producing data)
+    ActivityStarted,
 }
 
 impl gpui::EventEmitter<TerminalViewEvent> for TerminalView {}
@@ -135,6 +137,11 @@ impl TerminalView {
                         // Track activity burst for idle detection
                         view.data_burst_count += 1;
                         view.last_data_time = Some(std::time::Instant::now());
+
+                        // Emit activity started after sustained output (3+ polls = 150ms+)
+                        if view.data_burst_count == 3 && view.idle_notified {
+                            cx.emit(TerminalViewEvent::ActivityStarted);
+                        }
                         view.idle_notified = false;
 
                         // Check for OSC title changes from the terminal
