@@ -134,12 +134,11 @@ impl TerminalView {
                 cx.background_executor().timer(Duration::from_millis(50)).await;
                 let result = this.update(cx, |view, cx| {
                     if view.terminal.check_and_clear_new_data() {
-                        // Track activity burst for idle detection
                         view.data_burst_count += 1;
                         view.last_data_time = Some(std::time::Instant::now());
 
-                        // Emit activity started after sustained output (3+ polls = 150ms+)
-                        if view.data_burst_count == 3 && view.idle_notified {
+                        // Emit activity started after sustained output (3+ consecutive polls)
+                        if view.data_burst_count == 3 {
                             cx.emit(TerminalViewEvent::ActivityStarted);
                         }
                         view.idle_notified = false;
@@ -184,16 +183,23 @@ impl TerminalView {
                             cx.emit(TerminalViewEvent::Bell);
                         }
                         cx.notify();
-                    } else if let Some(last) = view.last_data_time {
-                        // Idle detection: if terminal had significant output (>=5 polls = 250ms+)
-                        // and has been silent for 2+ seconds, emit bell notification
-                        if !view.idle_notified && view.data_burst_count >= 5
-                            && last.elapsed() >= Duration::from_secs(2)
-                        {
-                            cx.emit(TerminalViewEvent::Bell);
-                            view.idle_notified = true;
-                            view.data_burst_count = 0;
-                            view.last_data_time = None;
+                    } else if view.data_burst_count > 0 {
+                        if let Some(last) = view.last_data_time {
+                            // Idle detection: sustained output (3+ polls) then 2s silence → Done
+                            if !view.idle_notified && view.data_burst_count >= 3
+                                && last.elapsed() >= Duration::from_secs(2)
+                            {
+                                cx.emit(TerminalViewEvent::Bell);
+                                view.idle_notified = true;
+                                view.data_burst_count = 0;
+                                view.last_data_time = None;
+                            }
+                            // Short burst that didn't reach threshold — reset after 500ms
+                            else if view.data_burst_count < 3
+                                && last.elapsed() >= Duration::from_millis(500)
+                            {
+                                view.data_burst_count = 0;
+                            }
                         }
                     }
                 });

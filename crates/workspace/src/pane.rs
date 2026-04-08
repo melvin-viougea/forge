@@ -345,7 +345,21 @@ impl Pane {
                                                     })
                                                     .child(div().truncate().child(tab.title.clone())),
                                             )
-                                            // Activity indicator: pulsating ring (Active) or solid dot (Done)
+                                            // Activity indicator (on inactive tabs only)
+                                            // Idle: subtle grey circle outline
+                                            .when(!is_active && tab.activity == TabActivity::Idle, |d: Div| {
+                                                d.child(
+                                                    div()
+                                                        .w(px(8.))
+                                                        .h(px(8.))
+                                                        .rounded_full()
+                                                        .border_1()
+                                                        .border_color(theme::overlay())
+                                                        .flex_shrink_0()
+                                                        .mx(px(4.))
+                                                )
+                                            })
+                                            // Active: pulsating blue ring
                                             .when(tab.activity == TabActivity::Active, |d: Div| {
                                                 d.child(
                                                     div()
@@ -366,6 +380,7 @@ impl Pane {
                                                         )
                                                 )
                                             })
+                                            // Done: solid blue dot
                                             .when(tab.activity == TabActivity::Done, |d: Div| {
                                                 d.child(
                                                     div()
