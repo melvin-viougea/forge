@@ -1,6 +1,6 @@
 [package]
 name = "ide_git_panel"
-version = "1.0.3"
+version = "1.1.0"
 edition.workspace = true
 
 [dependencies]

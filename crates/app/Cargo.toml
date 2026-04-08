@@ -1,6 +1,6 @@
 [package]
 name = "forge"
-version = "1.0.3"
+version = "1.1.0"
 edition.workspace = true
 
 [[bin]]

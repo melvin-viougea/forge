@@ -18,6 +18,7 @@ pub struct IdeWorkspace {
     pub update_version: Option<String>,
     pub is_running: bool,
     pub is_pushing: bool,
+    pub is_pulling: bool,
     dragging: Option<DragSide>,
     drag_start_x: f32,
     drag_start_width: f32,
@@ -28,6 +29,7 @@ pub enum WorkspaceEvent {
     SettingsClicked,
     RunClicked,
     PushClicked,
+    PullClicked,
     LayoutChanged,
 }
 
@@ -46,6 +48,7 @@ impl IdeWorkspace {
             update_version: None,
             is_running: false,
             is_pushing: false,
+            is_pulling: false,
             dragging: None,
             drag_start_x: 0.,
             drag_start_width: 0.,
@@ -170,7 +173,7 @@ impl Render for IdeWorkspace {
                                     .text_sm()
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(theme::blue())
-                                    .child("FORGE v1.0.3"),
+                                    .child("FORGE v1.1.0"),
                             ),
                     )
                     // Right: run + push + settings
@@ -214,12 +217,35 @@ impl Render for IdeWorkspace {
                                     .h(px(22.))
                                     .rounded(px(4.))
                                     .cursor_pointer()
+                                    .text_color(theme::blue())
+                                    .hover(|d| d.text_color(theme::lavender()).bg(theme::surface0()))
+                                    .child(
+                                        svg()
+                                            .path("crates/app/assets/git-push.svg")
+                                            .size(px(16.))
+                                            .text_color(theme::blue())
+                                    )
+                                    .on_click(cx.listener(|_this, _ev, _window, cx| {
+                                        cx.emit(WorkspaceEvent::PushClicked);
+                                    })),
+                            )
+                            // Pull
+                            .child(
+                                div()
+                                    .id("pull-btn")
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .w(px(32.))
+                                    .h(px(22.))
+                                    .rounded(px(4.))
+                                    .cursor_pointer()
                                     .text_size(px(16.))
                                     .text_color(theme::blue())
                                     .hover(|d| d.text_color(theme::lavender()).bg(theme::surface0()))
                                     .child(div().font_family("MesloLGS NF").child("\u{e726}"))
                                     .on_click(cx.listener(|_this, _ev, _window, cx| {
-                                        cx.emit(WorkspaceEvent::PushClicked);
+                                        cx.emit(WorkspaceEvent::PullClicked);
                                     })),
                             )
                             // Settings gear

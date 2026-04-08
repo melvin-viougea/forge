@@ -10,7 +10,7 @@ use std::time::Duration;
 use ide_file_explorer::{FileExplorerPanel, FileExplorerEvent};
 use ide_git_panel::{CommitPanel, CommitDiffView, GitChangesPanel, GitChangesEvent, GitLogPanel, GitLogEvent, RunnerEvent};
 use ide_workspace::theme::{self, ThemeName};
-use ide_workspace::{FileView, FileViewEvent};
+use ide_workspace::{FileView, FileViewEvent, MarkdownPreviewView};
 use ide_terminal::{LayoutDimensions, TerminalView, TerminalViewEvent};
 use ide_workspace::{IdeWorkspace, Pane, PaneEvent, WorkspaceEvent};
 
@@ -630,6 +630,22 @@ struct ProjectState {
 
 // ── AppView ──────────────────────────────────────────────────
 
+#[derive(Clone, Copy, PartialEq)]
+enum ToastKind {
+    Progress,
+    Success,
+    Error,
+}
+
+#[derive(Clone)]
+struct Toast {
+    id: usize,
+    label: String,
+    message: String,
+    kind: ToastKind,
+    percent: Option<u8>,
+}
+
 struct AppView {
     workspace: Entity<IdeWorkspace>,
     project_panel: Entity<ProjectPanel>,
@@ -647,6 +663,8 @@ struct AppView {
     crop_picker_open: bool,
     crop_drag_start: Option<(f32, f32)>,
     crop_drag_initial: (f32, f32),
+    toasts: Vec<Toast>,
+    next_toast_id: usize,
     _project_subscription: Subscription,
     _workspace_subscription: Subscription,
     _update_task: Task<()>,
@@ -890,7 +908,45 @@ impl AppView {
         );
     }
 
+    fn add_toast(&mut self, label: &str, message: &str, kind: ToastKind, percent: Option<u8>, cx: &mut Context<Self>) -> usize {
+        let id = self.next_toast_id;
+        self.next_toast_id += 1;
+        self.toasts.push(Toast {
+            id,
+            label: label.to_string(),
+            message: message.to_string(),
+            kind,
+            percent,
+        });
+        cx.notify();
+        id
+    }
+
+    fn update_toast(&mut self, id: usize, message: &str, kind: ToastKind, percent: Option<u8>, cx: &mut Context<Self>) {
+        if let Some(toast) = self.toasts.iter_mut().find(|t| t.id == id) {
+            toast.message = message.to_string();
+            toast.kind = kind;
+            toast.percent = percent;
+            cx.notify();
+        }
+    }
+
+    fn dismiss_toast(&mut self, id: usize, cx: &mut Context<Self>) {
+        self.toasts.retain(|t| t.id != id);
+        cx.notify();
+    }
+
     fn open_file_in_pane(&mut self, pane: &Entity<Pane>, path: PathBuf, cx: &mut Context<Self>) {
+        // Markdown files open in preview by default
+        if path.extension().map(|e| e == "md").unwrap_or(false) {
+            self.open_markdown_preview(pane, path, cx);
+            return;
+        }
+
+        self.open_file_editor(pane.clone(), path, cx);
+    }
+
+    fn open_file_editor(&mut self, pane: Entity<Pane>, path: PathBuf, cx: &mut Context<Self>) {
         // Check if file is already open in this pane — switch to it
         let existing = pane.read(cx).tabs.iter().position(|tab| tab.detail == path.to_string_lossy());
         if let Some(idx) = existing {
@@ -910,8 +966,6 @@ impl AppView {
 
         let detail = path.to_string_lossy().to_string();
         let file_view = cx.new(|cx| FileView::new(path, cx));
-        let pane_for_title = pane.clone();
-        let tab_id_ref = std::cell::Cell::new(0usize);
         let tab_id = pane.update(cx, |p, _cx| {
             p.add_tab(filename, icon, detail, AnyView::from(file_view.clone()), true)
         });
@@ -927,6 +981,34 @@ impl AppView {
                 }
             }
         }).detach();
+        cx.notify();
+    }
+
+    fn open_markdown_preview(&mut self, pane: &Entity<Pane>, path: PathBuf, cx: &mut Context<Self>) {
+        let detail = format!("preview:{}", path.to_string_lossy());
+
+        // Check if preview is already open for this file
+        let existing = pane.read(cx).tabs.iter().position(|tab| tab.detail == detail);
+        if let Some(idx) = existing {
+            let tab_id = pane.read(cx).tabs[idx].id;
+            pane.update(cx, |p, cx| {
+                p.set_active_tab(tab_id);
+                cx.notify();
+            });
+            return;
+        }
+
+        let filename = path.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "preview".to_string());
+
+        let title = format!("Preview: {}", filename);
+        let icon = "crates/app/assets/markdown.svg";
+        let md_view = cx.new(|_cx| MarkdownPreviewView::new(path));
+
+        pane.update(cx, |p, _cx| {
+            p.add_tab(title, icon, detail, AnyView::from(md_view), true);
+        });
         cx.notify();
     }
 
@@ -1089,10 +1171,14 @@ impl AppView {
         // Subscribe to file open events from file explorer
         let file_explorer_entity = right_panel.read(cx).file_explorer.clone();
         let pane_for_fe = pane.clone();
+        let pane_for_md = pane.clone();
         let file_explorer_sub = cx.subscribe(&file_explorer_entity, move |this: &mut AppView, _fe, event: &FileExplorerEvent, cx| {
             match event {
                 FileExplorerEvent::FileOpened(path) => {
                     this.open_file_in_pane(&pane_for_fe, path.clone(), cx);
+                }
+                FileExplorerEvent::EditFile(path) => {
+                    this.open_file_editor(pane_for_md.clone(), path.clone(), cx);
                 }
             }
         });
@@ -1115,12 +1201,21 @@ impl AppView {
         let git_log_sub = cx.subscribe(&git_log_entity, move |_this: &mut AppView, _gl, event: &GitLogEvent, cx| {
             match event {
                 GitLogEvent::CommitClicked { hash, message } => {
-                    let title = format!("{}", &hash[..7.min(hash.len())]);
                     let detail = format!("commit:{}", hash);
-                    let diff_view = cx.new(|_cx| CommitDiffView::new(&project_path_for_gl, hash, message));
-                    pane_for_gl.update(cx, |p, _cx| {
-                        p.add_tab(title, "crates/app/assets/git-commit.svg", detail, AnyView::from(diff_view), true);
-                    });
+                    let existing = pane_for_gl.read(cx).tabs.iter().position(|tab| tab.detail == detail);
+                    if let Some(idx) = existing {
+                        let tab_id = pane_for_gl.read(cx).tabs[idx].id;
+                        pane_for_gl.update(cx, |p, cx| {
+                            p.set_active_tab(tab_id);
+                            cx.notify();
+                        });
+                    } else {
+                        let title = format!("{}", &hash[..7.min(hash.len())]);
+                        let diff_view = cx.new(|_cx| CommitDiffView::new(&project_path_for_gl, hash, message));
+                        pane_for_gl.update(cx, |p, _cx| {
+                            p.add_tab(title, "crates/app/assets/git-pull.svg", detail, AnyView::from(diff_view), true);
+                        });
+                    }
                     cx.notify();
                 }
             }
@@ -1825,6 +1920,120 @@ impl Render for AppView {
             );
         }
 
+        // ── Toast notifications (top-right floating) ──
+        if !self.toasts.is_empty() {
+            base = base.child(
+                div()
+                    .absolute()
+                    .top(px(44.))
+                    .right(px(12.))
+                    .w(px(300.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .children(self.toasts.iter().map(|toast| {
+                        let toast_id = toast.id;
+                        let (accent, icon) = match toast.kind {
+                            ToastKind::Progress => (colors::blue(), "\u{25cf}"),
+                            ToastKind::Success => (colors::green(), "\u{2713}"),
+                            ToastKind::Error => (colors::red(), "\u{2717}"),
+                        };
+
+                        let mut card = div()
+                            .id(ElementId::Name(format!("toast-{}", toast_id).into()))
+                            .flex()
+                            .flex_col()
+                            .w_full()
+                            .bg(colors::mantle())
+                            .border_1()
+                            .border_color(colors::surface1())
+                            .rounded(px(8.))
+                            .shadow_lg()
+                            .overflow_hidden();
+
+                        // Progress bar at top
+                        if let Some(pct) = toast.percent {
+                            card = card.child(
+                                div()
+                                    .w_full()
+                                    .h(px(3.))
+                                    .child(
+                                        div()
+                                            .h_full()
+                                            .w(relative(pct as f32 / 100.0))
+                                            .bg(accent)
+                                    )
+                            );
+                        }
+
+                        // Content
+                        card = card.child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_start()
+                                .gap(px(10.))
+                                .px(px(12.))
+                                .py(px(10.))
+                                // Icon
+                                .child(
+                                    div()
+                                        .text_color(accent)
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_sm()
+                                        .mt(px(1.))
+                                        .child(icon)
+                                )
+                                // Text
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(2.))
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(colors::text())
+                                                .child(toast.label.clone())
+                                        )
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(colors::subtext())
+                                                .child(toast.message.clone())
+                                        )
+                                )
+                                // Close button
+                                .when(toast.kind != ToastKind::Progress, |d: Div| {
+                                    d.child(
+                                        div()
+                                            .id(ElementId::Name(format!("toast-close-{}", toast_id).into()))
+                                            .flex_shrink_0()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .w(px(16.))
+                                            .h(px(16.))
+                                            .rounded(px(3.))
+                                            .text_xs()
+                                            .text_color(colors::overlay())
+                                            .cursor_pointer()
+                                            .hover(|d| d.text_color(colors::text()).bg(colors::surface0()))
+                                            .child("\u{00d7}")
+                                            .on_click(cx.listener(move |this, _ev, _window, cx| {
+                                                this.dismiss_toast(toast_id, cx);
+                                            }))
+                                    )
+                                })
+                        );
+
+                        card
+                    }))
+            );
+        }
+
         base
     }
 }
@@ -1840,7 +2049,9 @@ impl AssetSource for EmbeddedAssets {
             "crates/app/assets/terminal.svg" => Ok(Some(std::borrow::Cow::Borrowed(include_bytes!("../assets/terminal.svg")))),
             "crates/app/assets/file.svg" => Ok(Some(std::borrow::Cow::Borrowed(include_bytes!("../assets/file.svg")))),
             "crates/app/assets/folder.svg" => Ok(Some(std::borrow::Cow::Borrowed(include_bytes!("../assets/folder.svg")))),
-            "crates/app/assets/git-commit.svg" => Ok(Some(std::borrow::Cow::Borrowed(include_bytes!("../assets/git-commit.svg")))),
+            "crates/app/assets/git-pull.svg" => Ok(Some(std::borrow::Cow::Borrowed(include_bytes!("../assets/git-pull.svg")))),
+            "crates/app/assets/markdown.svg" => Ok(Some(std::borrow::Cow::Borrowed(include_bytes!("../assets/markdown.svg")))),
+            "crates/app/assets/git-push.svg" => Ok(Some(std::borrow::Cow::Borrowed(include_bytes!("../assets/git-push.svg")))),
             _ => Ok(None),
         }
     }
@@ -2123,14 +2334,14 @@ fn main() {
                                         cx.notify();
                                     });
 
+                                    let toast_id = this.add_toast("Push", "Committing & pushing...", ToastKind::Progress, Some(30), cx);
                                     let root = this.project_states[idx].path.clone();
                                     let ws = this.workspace.clone();
                                     let cp = commit_panel.clone();
-                                    cx.spawn(async move |_this: WeakEntity<AppView>, cx: &mut AsyncApp| {
+                                    cx.spawn(async move |this_weak: WeakEntity<AppView>, cx: &mut AsyncApp| {
                                         let result = cx.background_executor().spawn(async move {
                                             ide_git_panel::operations::one_button_commit_and_push(&root)
                                         }).await;
-                                        let _ = result;
 
                                         cp.update(cx, |panel, cx| {
                                             panel.is_pushing = false;
@@ -2139,6 +2350,58 @@ fn main() {
                                         ws.update(cx, |ws, cx| {
                                             ws.is_pushing = false;
                                             cx.notify();
+                                        }).ok();
+
+                                        this_weak.update(cx, |view, cx| {
+                                            match result {
+                                                Ok(msg) => view.update_toast(toast_id, &format!("Pushed: {}", msg), ToastKind::Success, Some(100), cx),
+                                                Err(e) => view.update_toast(toast_id, &format!("{}", e), ToastKind::Error, None, cx),
+                                            }
+                                        }).ok();
+
+                                        // Auto-dismiss after 4s
+                                        cx.background_executor().timer(Duration::from_secs(4)).await;
+                                        this_weak.update(cx, |view, cx| {
+                                            view.dismiss_toast(toast_id, cx);
+                                        }).ok();
+                                    }).detach();
+                                }
+                            }
+                            WorkspaceEvent::PullClicked => {
+                                if let Some(idx) = this.active_project {
+                                    let is_pulling = this.workspace.read(cx).is_pulling;
+                                    if is_pulling {
+                                        return;
+                                    }
+                                    this.workspace.update(cx, |ws, cx| {
+                                        ws.is_pulling = true;
+                                        cx.notify();
+                                    });
+
+                                    let toast_id = this.add_toast("Pull", "Pulling...", ToastKind::Progress, Some(50), cx);
+                                    let root = this.project_states[idx].path.clone();
+                                    let ws = this.workspace.clone();
+                                    cx.spawn(async move |this_weak: WeakEntity<AppView>, cx: &mut AsyncApp| {
+                                        let result = cx.background_executor().spawn(async move {
+                                            ide_git_panel::operations::pull(&root)
+                                        }).await;
+
+                                        ws.update(cx, |ws, cx| {
+                                            ws.is_pulling = false;
+                                            cx.notify();
+                                        }).ok();
+
+                                        this_weak.update(cx, |view, cx| {
+                                            match result {
+                                                Ok(()) => view.update_toast(toast_id, "Pull successful", ToastKind::Success, Some(100), cx),
+                                                Err(e) => view.update_toast(toast_id, &format!("{}", e), ToastKind::Error, None, cx),
+                                            }
+                                        }).ok();
+
+                                        // Auto-dismiss after 4s
+                                        cx.background_executor().timer(Duration::from_secs(4)).await;
+                                        this_weak.update(cx, |view, cx| {
+                                            view.dismiss_toast(toast_id, cx);
                                         }).ok();
                                     }).detach();
                                 }
@@ -2195,6 +2458,8 @@ fn main() {
                         crop_picker_open: false,
                         crop_drag_start: None,
                         crop_drag_initial: (0.5, 0.5),
+                        toasts: Vec::new(),
+                        next_toast_id: 0,
                         _project_subscription: project_sub,
                         _workspace_subscription: workspace_sub,
                         _update_task: update_task,

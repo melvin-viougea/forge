@@ -55,6 +55,20 @@ pub fn push(root: &Path) -> Result<()> {
     Ok(())
 }
 
+pub fn pull(root: &Path) -> Result<()> {
+    let output = Command::new("git")
+        .arg("pull")
+        .current_dir(root)
+        .output()
+        .context("Failed to execute git pull")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git pull failed: {}", stderr);
+    }
+    Ok(())
+}
+
 /// Generate a commit message using Claude Code CLI
 pub fn generate_commit_message(root: &Path) -> Result<String> {
     let diff_output = Command::new("git")

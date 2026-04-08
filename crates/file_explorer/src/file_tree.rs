@@ -25,6 +25,8 @@ impl FileEntry {
     pub fn icon_svg(&self) -> &'static str {
         if self.is_dir {
             "crates/app/assets/folder.svg"
+        } else if self.name.ends_with(".md") {
+            "crates/app/assets/markdown.svg"
         } else {
             "crates/app/assets/file.svg"
         }

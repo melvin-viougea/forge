@@ -6,6 +6,7 @@ use crate::file_tree::{build_file_tree, get_git_statuses, FileEntry, GitFileStat
 
 pub enum FileExplorerEvent {
     FileOpened(PathBuf),
+    EditFile(PathBuf),
 }
 
 impl gpui::EventEmitter<FileExplorerEvent> for FileExplorerPanel {}
@@ -163,7 +164,7 @@ impl FileExplorerPanel {
         }
     }
 
-    fn execute_action(&mut self, action: &str, idx: usize) {
+    fn execute_action(&mut self, action: &str, idx: usize, cx: &mut Context<Self>) {
         let path = self.entries[idx].entry.path.clone();
         let is_dir = self.entries[idx].entry.is_dir;
         let parent = if is_dir {
@@ -173,6 +174,10 @@ impl FileExplorerPanel {
         };
 
         match action {
+            "edit_md" => {
+                let abs_path = self.root_path.join(&path);
+                cx.emit(FileExplorerEvent::EditFile(abs_path));
+            }
             "new_file" => {
                 let new_path = parent.join("untitled");
                 let _ = std::fs::write(&new_path, "");
@@ -266,7 +271,7 @@ fn render_menu_item(
         .hover(|d| d.bg(colors::surface1()))
         .child(label_owned)
         .on_click(cx.listener(move |this, _ev, _window, cx| {
-            this.execute_action(action, target_idx);
+            this.execute_action(action, target_idx, cx);
             cx.notify();
         }))
 }
@@ -350,6 +355,9 @@ impl Render for FileExplorerPanel {
             )
             // Context menu overlay
             .when_some(context_menu, |d: Stateful<Div>, (pos, target_idx)| {
+                let is_md = target_idx < self.entries.len()
+                    && !self.entries[target_idx].entry.is_dir
+                    && self.entries[target_idx].entry.name.ends_with(".md");
                 d.child(
                     deferred(
                         anchored()
@@ -358,7 +366,7 @@ impl Render for FileExplorerPanel {
                                 div()
                                     .flex()
                                     .flex_col()
-                                    .w(px(160.))
+                                    .w(px(180.))
                                     .bg(colors::surface0())
                                     .border_1()
                                     .border_color(colors::surface1())
@@ -366,6 +374,10 @@ impl Render for FileExplorerPanel {
                                     .py(px(4.))
                                     .text_sm()
                                     .shadow_lg()
+                                    .when(is_md, |d: Div| {
+                                        d.child(render_menu_item("ctx-edit-md", "Edit File", "edit_md", target_idx, cx, colors::blue()))
+                                         .child(div().w_full().h(px(1.)).my(px(4.)).bg(colors::surface1()))
+                                    })
                                     .child(render_menu_item("ctx-new-file", "New File", "new_file", target_idx, cx, colors::text()))
                                     .child(render_menu_item("ctx-new-folder", "New Folder", "new_folder", target_idx, cx, colors::text()))
                                     .child(div().w_full().h(px(1.)).my(px(4.)).bg(colors::surface1()))
