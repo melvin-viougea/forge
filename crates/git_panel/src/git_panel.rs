@@ -333,6 +333,7 @@ impl Render for GitChangesPanel {
                                                 .on_click(cx.listener(
                                                     move |this, _ev, _window, cx| {
                                                         this.context_menu = None;
+                                                        if target_idx >= this.changes.len() { return; }
                                                         let abs_path = this
                                                             .root_path
                                                             .join(&this.changes[target_idx].path);
@@ -358,6 +359,7 @@ impl Render for GitChangesPanel {
                                             .on_click(cx.listener(
                                                 move |this, _ev, _window, cx| {
                                                     this.context_menu = None;
+                                                    if target_idx >= this.changes.len() { return; }
                                                     let abs_path = this
                                                         .root_path
                                                         .join(&this.changes[target_idx].path);
@@ -381,6 +383,7 @@ impl Render for GitChangesPanel {
                                             .child("Discard Changes")
                                             .on_click(cx.listener(
                                                 move |this, _ev, _window, cx| {
+                                                    if target_idx >= this.changes.len() { return; }
                                                     this.discard_change(target_idx);
                                                     cx.notify();
                                                 },
@@ -491,7 +494,7 @@ fn render_change_entry(
         )
         .on_click(cx.listener(move |this, _ev, _window, cx| {
             this.context_menu = None;
-
+            if idx >= this.changes.len() { return; }
             let abs_path = this.root_path.join(&this.changes[idx].path);
             cx.emit(GitChangesEvent::FileOpened(abs_path));
             cx.notify();
@@ -499,7 +502,7 @@ fn render_change_entry(
         .on_mouse_down(
             MouseButton::Right,
             cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
-    
+                if idx >= this.changes.len() { return; }
                 this.context_menu = Some(ContextMenuState {
                     position: ev.position,
                     target_idx: idx,
