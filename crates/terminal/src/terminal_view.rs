@@ -51,8 +51,8 @@ impl Global for LayoutDimensions {}
 
 #[derive(Clone, Debug)]
 struct Selection {
-    start: (usize, usize), // (row, col)
-    end: (usize, usize),   // (row, col)
+    start: (usize, usize), // (row, col) — viewport-relative
+    end: (usize, usize),   // (row, col) — viewport-relative
 }
 
 impl Selection {
@@ -64,6 +64,15 @@ impl Selection {
             (self.start, self.end)
         } else {
             (self.end, self.start)
+        }
+    }
+
+    /// Adjust start position after a scroll delta (positive = content moved down in viewport)
+    fn adjust_for_scroll(&mut self, delta: i32) {
+        if delta > 0 {
+            self.start.0 += delta as usize;
+        } else {
+            self.start.0 = self.start.0.saturating_sub((-delta) as usize);
         }
     }
 
@@ -120,6 +129,9 @@ pub struct TerminalView {
     idle_notified: bool,
     /// Timestamp of terminal creation — ignore activity events during startup
     created_at: std::time::Instant,
+    /// Auto-scroll during selection drag
+    auto_scroll_speed: f32,
+    auto_scroll_task: Option<Task<()>>,
 }
 
 use ide_workspace::theme as colors;
@@ -234,6 +246,8 @@ impl TerminalView {
             last_data_time: None,
             idle_notified: true, // start as true to avoid notification on terminal open
             created_at: std::time::Instant::now(),
+            auto_scroll_speed: 0.0,
+            auto_scroll_task: None,
         }
     }
 }
@@ -246,7 +260,7 @@ const LINE_HEIGHT: f32 = 18.0;
 const CONTENT_PADDING: f32 = 8.0;
 
 impl TerminalView {
-    /// Convert a window-relative mouse position to terminal cell (row, col).
+    /// Convert a window-relative mouse position to terminal cell (row, col) in viewport coords.
     fn mouse_to_cell(&self, pos: Point<Pixels>) -> (usize, usize) {
         let x: f32 = pos.x.into();
         let y: f32 = pos.y.into();
@@ -260,22 +274,66 @@ impl TerminalView {
         (row.min(max_row), col.min(max_col))
     }
 
-    /// Extract text covered by the current selection from visible lines.
+    fn start_auto_scroll(&mut self, cx: &mut Context<Self>) {
+        if self.auto_scroll_task.is_some() { return; }
+        let task = cx.spawn(async |entity: WeakEntity<Self>, cx: &mut AsyncApp| {
+            loop {
+                cx.background_executor().timer(Duration::from_millis(40)).await;
+                let should_continue = entity.update(cx, |this, cx| {
+                    if !this.is_selecting || this.auto_scroll_speed == 0.0 {
+                        return false;
+                    }
+                    let lines = this.auto_scroll_speed.abs().ceil() as i32;
+                    let max_row = this.terminal.rows.saturating_sub(1) as usize;
+                    let max_col = this.terminal.cols.saturating_sub(1) as usize;
+                    let (old_offset, _, _) = this.terminal.scroll_info();
+
+                    if this.auto_scroll_speed > 0.0 {
+                        // Scroll down (towards newer content)
+                        this.terminal.scroll(-lines);
+                        let (new_offset, _, _) = this.terminal.scroll_info();
+                        let delta = old_offset as i32 - new_offset as i32; // content moves up
+                        if let Some(ref mut sel) = this.selection {
+                            sel.adjust_for_scroll(-delta);
+                            sel.end = (max_row, max_col);
+                        }
+                    } else {
+                        // Scroll up (towards older content)
+                        this.terminal.scroll(lines);
+                        let (new_offset, _, _) = this.terminal.scroll_info();
+                        let delta = new_offset as i32 - old_offset as i32; // content moves down
+                        if let Some(ref mut sel) = this.selection {
+                            sel.adjust_for_scroll(delta);
+                            sel.end = (0, 0);
+                        }
+                    }
+                    cx.notify();
+                    true
+                }).unwrap_or(false);
+                if !should_continue { break; }
+            }
+        });
+        self.auto_scroll_task = Some(task);
+    }
+
+    fn stop_auto_scroll(&mut self) {
+        self.auto_scroll_speed = 0.0;
+        self.auto_scroll_task = None;
+    }
+
+    /// Extract text covered by the current selection, including lines scrolled off-screen.
     fn get_selected_text(&self) -> String {
         let sel = match &self.selection {
             Some(s) => s,
             None => return String::new(),
         };
         let (start, end) = sel.ordered();
-        let lines = self.terminal.get_visible_lines(200);
+        let lines = self.terminal.get_lines_for_range(start.0, end.0);
         let mut result = String::new();
 
-        for (row_idx, line) in lines.iter().enumerate() {
-            if row_idx < start.0 || row_idx > end.0 {
-                continue;
-            }
-            let from = if row_idx == start.0 { start.1 } else { 0 };
-            let to = if row_idx == end.0 {
+        for (row_idx, line) in &lines {
+            let from = if *row_idx == start.0 { start.1 } else { 0 };
+            let to = if *row_idx == end.0 {
                 end.1 + 1
             } else {
                 line.cells.len()
@@ -285,14 +343,12 @@ impl TerminalView {
                 result.push(line.cells[col].ch);
             }
             // Add newline between selected rows (but not after the last)
-            if row_idx < end.0 {
-                // Trim trailing spaces before the newline
+            if *row_idx < end.0 {
                 let trimmed = result.trim_end_matches(' ');
                 result.truncate(trimmed.len());
                 result.push('\n');
             }
         }
-        // Trim trailing spaces on the last line too
         let trimmed = result.trim_end_matches(' ');
         trimmed.to_string()
     }
@@ -544,6 +600,28 @@ impl Render for TerminalView {
                     if let Some(ref mut sel) = this.selection {
                         sel.end = (row, col);
                     }
+
+                    // Auto-scroll when near edges
+                    let mouse_y: f32 = ev.position.y.into();
+                    let (_, off_y) = this.content_origin.get();
+                    let top = off_y;
+                    let bottom = off_y + this.terminal.rows as f32 * LINE_HEIGHT + CONTENT_PADDING * 2.0;
+                    let zone = 80.0_f32;
+
+                    if mouse_y > bottom - zone {
+                        let distance = (mouse_y - (bottom - zone)).max(0.0);
+                        let ratio = (distance / zone).min(1.0);
+                        this.auto_scroll_speed = 1.0 + ratio * 9.0;
+                        this.start_auto_scroll(cx);
+                    } else if mouse_y < top + zone {
+                        let distance = ((top + zone) - mouse_y).max(0.0);
+                        let ratio = (distance / zone).min(1.0);
+                        this.auto_scroll_speed = -(1.0 + ratio * 9.0);
+                        this.start_auto_scroll(cx);
+                    } else {
+                        this.stop_auto_scroll();
+                    }
+
                     cx.notify();
                 }
             }))
@@ -554,6 +632,7 @@ impl Render for TerminalView {
                         sel.end = (row, col);
                     }
                     this.is_selecting = false;
+                    this.stop_auto_scroll();
                     // Click without drag → clear selection
                     if let Some(ref sel) = this.selection {
                         if sel.start == sel.end {
@@ -570,7 +649,14 @@ impl Render for TerminalView {
                 let lines = (this.scroll_acc / 8.0) as i32;
                 if lines != 0 {
                     this.scroll_acc -= lines as f32 * 8.0;
+                    let (old_offset, _, _) = this.terminal.scroll_info();
                     this.terminal.scroll(lines);
+                    // Adjust selection to follow content during scroll
+                    if let Some(ref mut sel) = this.selection {
+                        let (new_offset, _, _) = this.terminal.scroll_info();
+                        let scroll_delta = new_offset as i32 - old_offset as i32;
+                        sel.adjust_for_scroll(scroll_delta);
+                    }
                     cx.notify();
                 }
             }))

@@ -4,6 +4,7 @@ pub mod highlight;
 use gpui::*;
 use gpui::prelude::*;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::theme;
 use buffer::Buffer;
@@ -39,7 +40,10 @@ pub struct FileView {
     // Bracket matching
     matched_bracket: Option<(usize, usize)>,
     // Scroll
-    scroll_handle: UniformListScrollHandle,
+    scroll_handle: ScrollHandle,
+    // Auto-scroll during selection drag
+    auto_scroll_speed: f32,
+    auto_scroll_task: Option<Task<()>>,
 }
 
 impl FileView {
@@ -78,7 +82,7 @@ impl FileView {
 
         let focus_handle = cx.focus_handle();
         let find_focus = cx.focus_handle();
-        let scroll_handle = UniformListScrollHandle::new();
+        let scroll_handle = ScrollHandle::new();
 
         Self {
             path,
@@ -101,6 +105,8 @@ impl FileView {
             find_focus,
             matched_bracket: None,
             scroll_handle,
+            auto_scroll_speed: 0.0,
+            auto_scroll_task: None,
         }
     }
 
@@ -597,7 +603,7 @@ impl FileView {
         if let Some(&(row, col, _)) = self.find_matches.get(self.find_current) {
             self.cursor_row = row;
             self.cursor_col = col;
-            self.scroll_handle.scroll_to_item(row, ScrollStrategy::Center);
+            self.scroll_to_cursor();
         }
     }
 
@@ -636,7 +642,57 @@ impl FileView {
     // ── Scroll to cursor ───────────────────────────
 
     fn scroll_to_cursor(&self) {
-        self.scroll_handle.scroll_to_item(self.cursor_row, ScrollStrategy::Top);
+        let line_height = 20.0_f32;
+        let padding = 4.0_f32;
+        let cursor_y = self.cursor_row as f32 * line_height + padding;
+        let offset = self.scroll_handle.offset();
+        let viewport_h: f32 = self.scroll_handle.bounds().size.height.into();
+        let scroll_top = -f32::from(offset.y);
+
+        if cursor_y < scroll_top {
+            // Cursor is above viewport
+            self.scroll_handle.set_offset(point(px(0.), px(-cursor_y)));
+        } else if cursor_y + line_height > scroll_top + viewport_h {
+            // Cursor is below viewport
+            self.scroll_handle.set_offset(point(px(0.), px(-(cursor_y + line_height - viewport_h))));
+        }
+    }
+
+    // ── Auto-scroll during selection drag ──────────
+
+    fn start_auto_scroll(&mut self, cx: &mut Context<Self>) {
+        if self.auto_scroll_task.is_some() { return; }
+        let task = cx.spawn(async |entity: WeakEntity<Self>, cx: &mut AsyncApp| {
+            loop {
+                cx.background_executor().timer(Duration::from_millis(40)).await;
+                let should_continue = entity.update(cx, |this, cx| {
+                    if !this.selecting || this.auto_scroll_speed == 0.0 {
+                        return false;
+                    }
+                    let lines = this.auto_scroll_speed.abs().ceil() as usize;
+                    let max_row = this.buffer.line_count().saturating_sub(1);
+
+                    if this.auto_scroll_speed > 0.0 {
+                        this.cursor_row = (this.cursor_row + lines).min(max_row);
+                        this.cursor_col = this.buffer.line(this.cursor_row).len();
+                    } else {
+                        this.cursor_row = this.cursor_row.saturating_sub(lines);
+                        this.cursor_col = 0;
+                    }
+                    this.extend_selection();
+                    this.scroll_to_cursor();
+                    cx.notify();
+                    true
+                }).unwrap_or(false);
+                if !should_continue { break; }
+            }
+        });
+        self.auto_scroll_task = Some(task);
+    }
+
+    fn stop_auto_scroll(&mut self) {
+        self.auto_scroll_speed = 0.0;
+        self.auto_scroll_task = None;
     }
 
     // ── Line rendering ─────────────────────────────
@@ -839,10 +895,34 @@ impl Render for FileView {
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _ev: &MouseUpEvent, _window, cx| {
                 if this.selecting {
                     this.selecting = false;
+                    this.stop_auto_scroll();
                     if let Some((sr, sc, er, ec)) = this.selection {
                         if sr == er && sc == ec { this.selection = None; }
                     }
                     cx.notify();
+                }
+            }))
+            .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _window, cx| {
+                if this.selecting && ev.pressed_button == Some(MouseButton::Left) {
+                    let mouse_y: f32 = ev.position.y.into();
+                    let scroll_bounds = this.scroll_handle.bounds();
+                    let top: f32 = scroll_bounds.top().into();
+                    let bottom: f32 = scroll_bounds.bottom().into();
+                    let zone = 80.0_f32;
+
+                    if mouse_y > bottom - zone {
+                        let distance = (mouse_y - (bottom - zone)).max(0.0);
+                        let ratio = (distance / zone).min(1.0);
+                        this.auto_scroll_speed = 1.0 + ratio * 9.0;
+                        this.start_auto_scroll(cx);
+                    } else if mouse_y < top + zone {
+                        let distance = ((top + zone) - mouse_y).max(0.0);
+                        let ratio = (distance / zone).min(1.0);
+                        this.auto_scroll_speed = -(1.0 + ratio * 9.0);
+                        this.start_auto_scroll(cx);
+                    } else {
+                        this.stop_auto_scroll();
+                    }
                 }
             }))
             .on_key_down(cx.listener(move |this, ev: &KeyDownEvent, _window, cx| {
@@ -1145,6 +1225,7 @@ impl Render for FileView {
                     .id("file-content-scroll")
                     .flex_1()
                     .overflow_y_scroll()
+                    .track_scroll(&self.scroll_handle)
                     .child(
                         div()
                             .flex()

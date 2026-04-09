@@ -326,6 +326,37 @@ impl Terminal {
         lines
     }
 
+    /// Get lines for a range of viewport rows (can extend beyond visible area for selection copy).
+    pub fn get_lines_for_range(&self, start_row: usize, end_row: usize) -> Vec<(usize, TerminalLine)> {
+        use alacritty_terminal::index::{Line, Column};
+
+        let term = self.term.lock().unwrap();
+        let grid = term.grid();
+        let display_offset = grid.display_offset();
+        let screen_lines = grid.screen_lines();
+        let history_size = grid.history_size();
+        let max_row = screen_lines + display_offset;
+        let mut lines = Vec::new();
+
+        for row_idx in start_row..=end_row.min(max_row.saturating_sub(1)) {
+            let line = Line(row_idx as i32) - display_offset;
+            // Bounds check: line must be in [-history_size, screen_lines - 1]
+            let line_val = row_idx as i32 - display_offset as i32;
+            if line_val < -(history_size as i32) || line_val >= screen_lines as i32 {
+                continue;
+            }
+            let row = &grid[line];
+            let mut cells = Vec::new();
+            for col_idx in 0..grid.columns() {
+                let cell = &row[Column(col_idx)];
+                cells.push(convert_cell(cell));
+            }
+            lines.push((row_idx, TerminalLine { cells }));
+        }
+
+        lines
+    }
+
     /// Scroll the terminal view (positive = up into scrollback, negative = down)
     pub fn scroll(&self, delta: i32) {
         use alacritty_terminal::grid::Scroll;
