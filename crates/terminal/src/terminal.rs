@@ -203,23 +203,35 @@ impl Terminal {
         cmd.cwd(working_dir.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into())));
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
-        cmd.env("PROMPT", "%~ %# ");
 
         // Shell integration: inject precmd hook to emit bell on command completion
+        // Uses ZDOTDIR redirect so .zshenv restores the original dotfiles chain,
+        // then .zshrc adds the hook AFTER p10k instant prompt to avoid conflicts.
         if shell.contains("zsh") {
             let home = std::env::var("HOME").unwrap_or_default();
             let init_dir = PathBuf::from(&home).join(".forge/shell-init");
             let _ = std::fs::create_dir_all(&init_dir);
+
+            // .zshenv: restore original ZDOTDIR and source user's .zshenv
             let zshenv = init_dir.join(".zshenv");
-            // Only write if missing or outdated
-            let expected = "# Forge shell integration — bell on command completion\n\
+            let zshenv_expected = "# Forge shell integration — restore user dotfiles\n\
                             ZDOTDIR=\"${FORGE_ORIG_ZDOTDIR:-$HOME}\"\n\
-                            [[ -f \"$ZDOTDIR/.zshenv\" ]] && source \"$ZDOTDIR/.zshenv\"\n\
+                            [[ -f \"$ZDOTDIR/.zshenv\" ]] && source \"$ZDOTDIR/.zshenv\"\n";
+            if std::fs::read_to_string(&zshenv).ok().as_deref() != Some(zshenv_expected) {
+                let _ = std::fs::write(&zshenv, zshenv_expected);
+            }
+
+            // .zshrc: source user's .zshrc first (includes p10k instant prompt),
+            // then add our precmd hook — this avoids the "console output during init" warning
+            let zshrc = init_dir.join(".zshrc");
+            let zshrc_expected = "# Forge shell integration — source user config then add bell hook\n\
+                            [[ -f \"${FORGE_ORIG_ZDOTDIR:-$HOME}/.zshrc\" ]] && source \"${FORGE_ORIG_ZDOTDIR:-$HOME}/.zshrc\"\n\
                             __forge_bell() { printf '\\a' }\n\
                             precmd_functions+=(__forge_bell)\n";
-            if std::fs::read_to_string(&zshenv).ok().as_deref() != Some(expected) {
-                let _ = std::fs::write(&zshenv, expected);
+            if std::fs::read_to_string(&zshrc).ok().as_deref() != Some(zshrc_expected) {
+                let _ = std::fs::write(&zshrc, zshrc_expected);
             }
+
             cmd.env("FORGE_ORIG_ZDOTDIR", std::env::var("ZDOTDIR").unwrap_or(home));
             cmd.env("ZDOTDIR", init_dir.to_string_lossy().as_ref());
         } else if shell.contains("bash") {
