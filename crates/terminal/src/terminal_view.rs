@@ -376,7 +376,12 @@ fn render_span(text: String, style: &CellStyle, bold: bool, selected: bool) -> D
     if selected {
         el = el.bg(colors::selection());
     } else if style.bg != TermColor::Default {
-        el = el.bg(style.bg.to_rgba(false));
+        let mut bg = style.bg.to_rgba(false);
+        let t_opacity = colors::terminal_opacity();
+        if t_opacity < 1.0 {
+            bg.a = t_opacity;
+        }
+        el = el.bg(bg);
     }
 
     el

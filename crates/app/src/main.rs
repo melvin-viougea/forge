@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use ide_file_explorer::{FileExplorerPanel, FileExplorerEvent};
-use ide_git_panel::{CommitPanel, CommitDiffView, GitChangesPanel, GitChangesEvent, GitLogPanel, GitLogEvent, RunnerEvent};
+use ide_git_panel::{CommitPanel, CommitDiffView, DiffView, ChangesReviewView, ChangesReviewEvent, GitChangesPanel, GitChangesEvent, GitLogPanel, GitLogEvent, RunnerEvent};
 use ide_workspace::theme::{self, ThemeName};
 use ide_workspace::{FileView, FileViewEvent, ImagePreviewView, MarkdownPreviewView};
 use ide_terminal::{LayoutDimensions, TerminalView, TerminalViewEvent};
@@ -708,6 +708,7 @@ struct AppView {
     settings_open: bool,
     wallpaper_path: Option<String>,
     wallpaper_opacity: f32,
+    terminal_opacity: f32,
     wallpaper_crop_x: f32,
     wallpaper_crop_y: f32,
     wallpaper_crop_zoom: f32,
@@ -976,6 +977,13 @@ impl AppView {
         self.notify_all(cx);
     }
 
+    fn apply_terminal_opacity(&mut self, opacity: f32, cx: &mut Context<Self>) {
+        self.terminal_opacity = opacity;
+        theme::set_terminal_opacity(opacity);
+        self.save_settings();
+        self.notify_all(cx);
+    }
+
     fn save_settings(&self) {
         settings::save(
             theme::current_name(),
@@ -984,6 +992,7 @@ impl AppView {
             self.wallpaper_crop_x,
             self.wallpaper_crop_y,
             self.wallpaper_crop_zoom,
+            self.terminal_opacity,
         );
     }
 
@@ -1121,6 +1130,71 @@ impl AppView {
 
         pane.update(cx, |p, _cx| {
             p.add_tab(filename, icon, detail, AnyView::from(img_view), true);
+        });
+        cx.notify();
+    }
+
+    fn open_diff_in_pane(&mut self, pane: &Entity<Pane>, root_path: &PathBuf, file_path: PathBuf, cx: &mut Context<Self>) {
+        let detail = format!("diff:{}", file_path.to_string_lossy());
+
+        let existing = pane.read(cx).tabs.iter().position(|tab| tab.detail == detail);
+        if let Some(idx) = existing {
+            let tab_id = pane.read(cx).tabs[idx].id;
+            pane.update(cx, |p, cx| {
+                p.set_active_tab(tab_id);
+                cx.notify();
+            });
+            return;
+        }
+
+        let filename = file_path.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "diff".to_string());
+
+        let icon = "crates/app/assets/git-pull.svg";
+        let diff_view = cx.new(|cx| DiffView::new_for_file(root_path.clone(), file_path, cx));
+
+        pane.update(cx, |p, _cx| {
+            p.add_tab(filename, icon, detail, AnyView::from(diff_view), true);
+        });
+        cx.notify();
+    }
+
+    fn open_changes_review(&mut self, pane: &Entity<Pane>, root_path: PathBuf, cx: &mut Context<Self>) {
+        let detail = "changes-review".to_string();
+
+        // If already open, switch to it
+        let existing = pane.read(cx).tabs.iter().position(|tab| tab.detail == detail);
+        if let Some(idx) = existing {
+            let tab_id = pane.read(cx).tabs[idx].id;
+            pane.update(cx, |p, cx| {
+                p.set_active_tab(tab_id);
+                cx.notify();
+            });
+            return;
+        }
+
+        let review_view = cx.new(|_cx| ChangesReviewView::new(root_path.clone()));
+        let pane_for_review = pane.clone();
+        let root_for_review = root_path.clone();
+        cx.subscribe(&review_view, move |this: &mut AppView, _rv, event: &ChangesReviewEvent, cx| {
+            match event {
+                ChangesReviewEvent::FileClicked(path) => {
+                    this.open_diff_in_pane(&pane_for_review, &root_for_review, path.clone(), cx);
+                }
+                ChangesReviewEvent::PushConfirmed => {
+                    // Sync workspace pushing state
+                    this.workspace.update(cx, |ws, cx| {
+                        ws.is_pushing = true;
+                        cx.notify();
+                    });
+                    cx.notify();
+                }
+            }
+        }).detach();
+
+        pane.update(cx, |p, _cx| {
+            p.add_tab("Changes".to_string(), "crates/app/assets/git-push.svg", detail, AnyView::from(review_view), true);
         });
         cx.notify();
     }
@@ -1322,6 +1396,12 @@ impl AppView {
                         cx.notify();
                     });
                 }
+                RunnerEvent::PushRequested => {
+                    let state = &this.project_states[project_idx];
+                    let project_path = state.path.clone();
+                    let pane = state.pane.clone();
+                    this.open_changes_review(&pane, project_path, cx);
+                }
             }
         });
 
@@ -1348,13 +1428,14 @@ impl AppView {
             }
         });
 
-        // Subscribe to file open events from git changes
+        // Subscribe to file open events from git changes → open diff view
         let git_changes_entity = right_panel.read(cx).git_changes.clone();
         let pane_for_gc = pane.clone();
+        let root_for_gc = path.clone();
         let git_changes_sub = cx.subscribe(&git_changes_entity, move |this: &mut AppView, _gc, event: &GitChangesEvent, cx| {
             match event {
-                GitChangesEvent::FileOpened(path) => {
-                    this.open_file_in_pane(&pane_for_gc, path.clone(), cx);
+                GitChangesEvent::FileOpened(file_path) => {
+                    this.open_diff_in_pane(&pane_for_gc, &root_for_gc, file_path.clone(), cx);
                 }
             }
         });
@@ -2245,6 +2326,79 @@ impl Render for AppView {
                                                             .child(pct),
                                                     ),
                                             )
+                                            // Terminal opacity slider
+                                            .child({
+                                                let t_opacity = self.terminal_opacity;
+                                                let t_pct = format!("{}%", (t_opacity * 100.0).round() as u32);
+                                                let t_fill = t_opacity as f64;
+                                                div()
+                                                    .flex()
+                                                    .flex_row()
+                                                    .items_center()
+                                                    .gap(px(8.))
+                                                    .child(
+                                                        div()
+                                                            .text_sm()
+                                                            .text_color(colors::subtext())
+                                                            .child("Terminal"),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .id("terminal-opacity-minus")
+                                                            .px(px(8.))
+                                                            .py(px(4.))
+                                                            .rounded(px(6.))
+                                                            .cursor_pointer()
+                                                            .bg(colors::surface0())
+                                                            .text_sm()
+                                                            .text_color(colors::text())
+                                                            .hover(|d| d.bg(colors::surface1()))
+                                                            .child("\u{2212}")
+                                                            .on_click(cx.listener(move |this, _ev, _window, cx| {
+                                                                let new_val = (t_opacity - 0.05).max(0.0);
+                                                                this.apply_terminal_opacity(new_val, cx);
+                                                            })),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .id("terminal-opacity-slider")
+                                                            .flex_1()
+                                                            .h(px(6.))
+                                                            .rounded(px(3.))
+                                                            .bg(colors::surface1())
+                                                            .child(
+                                                                div()
+                                                                    .h_full()
+                                                                    .rounded(px(3.))
+                                                                    .bg(colors::blue())
+                                                                    .w(relative(t_fill as f32)),
+                                                            ),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .id("terminal-opacity-plus")
+                                                            .px(px(8.))
+                                                            .py(px(4.))
+                                                            .rounded(px(6.))
+                                                            .cursor_pointer()
+                                                            .bg(colors::surface0())
+                                                            .text_sm()
+                                                            .text_color(colors::text())
+                                                            .hover(|d| d.bg(colors::surface1()))
+                                                            .child("+")
+                                                            .on_click(cx.listener(move |this, _ev, _window, cx| {
+                                                                let new_val = (t_opacity + 0.05).min(1.0);
+                                                                this.apply_terminal_opacity(new_val, cx);
+                                                            })),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_sm()
+                                                            .text_color(colors::text())
+                                                            .w(px(36.))
+                                                            .child(t_pct),
+                                                    )
+                                            })
                                             // Remove wallpaper button
                                             .child(
                                                 div()
@@ -2786,6 +2940,7 @@ fn main() {
                     theme::set_theme(saved_settings.theme);
                     theme::set_wallpaper(saved_settings.wallpaper.clone());
                     theme::set_wallpaper_opacity(saved_settings.wallpaper_opacity);
+                    theme::set_terminal_opacity(saved_settings.terminal_opacity);
 
                     // Load image dimensions if wallpaper is set
                     let wallpaper_img_size = saved_settings.wallpaper.as_ref()
@@ -2802,6 +2957,7 @@ fn main() {
                         settings_open: false,
                         wallpaper_path: saved_settings.wallpaper,
                         wallpaper_opacity: saved_settings.wallpaper_opacity,
+                        terminal_opacity: saved_settings.terminal_opacity,
                         wallpaper_crop_x: saved_settings.wallpaper_crop_x,
                         wallpaper_crop_y: saved_settings.wallpaper_crop_y,
                         wallpaper_crop_zoom: saved_settings.wallpaper_crop_zoom,

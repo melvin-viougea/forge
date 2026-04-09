@@ -14,9 +14,10 @@ pub struct SavedSettings {
     pub wallpaper_crop_x: f32,
     pub wallpaper_crop_y: f32,
     pub wallpaper_crop_zoom: f32,
+    pub terminal_opacity: f32,
 }
 
-pub fn save(theme: ThemeName, wallpaper: Option<&str>, wallpaper_opacity: f32, crop_x: f32, crop_y: f32, crop_zoom: f32) {
+pub fn save(theme: ThemeName, wallpaper: Option<&str>, wallpaper_opacity: f32, crop_x: f32, crop_y: f32, crop_zoom: f32, terminal_opacity: f32) {
     let Some(path) = settings_path() else { return };
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -26,8 +27,8 @@ pub fn save(theme: ThemeName, wallpaper: Option<&str>, wallpaper_opacity: f32, c
         None => String::new(),
     };
     let json = format!(
-        "{{\"theme\":\"{}\"{},\"wallpaper_opacity\":{:.2},\"wallpaper_crop_x\":{:.4},\"wallpaper_crop_y\":{:.4},\"wallpaper_crop_zoom\":{:.4}}}",
-        theme.as_str(), wp, wallpaper_opacity, crop_x, crop_y, crop_zoom
+        "{{\"theme\":\"{}\"{},\"wallpaper_opacity\":{:.2},\"wallpaper_crop_x\":{:.4},\"wallpaper_crop_y\":{:.4},\"wallpaper_crop_zoom\":{:.4},\"terminal_opacity\":{:.2}}}",
+        theme.as_str(), wp, wallpaper_opacity, crop_x, crop_y, crop_zoom, terminal_opacity
     );
     let _ = std::fs::write(&path, json);
 }
@@ -61,7 +62,11 @@ pub fn load() -> SavedSettings {
         .and_then(|c| parse_number(c, "wallpaper_crop_zoom"))
         .unwrap_or(1.0);
 
-    SavedSettings { theme, wallpaper, wallpaper_opacity, wallpaper_crop_x, wallpaper_crop_y, wallpaper_crop_zoom }
+    let terminal_opacity = content.as_ref()
+        .and_then(|c| parse_number(c, "terminal_opacity"))
+        .unwrap_or(1.0);
+
+    SavedSettings { theme, wallpaper, wallpaper_opacity, wallpaper_crop_x, wallpaper_crop_y, wallpaper_crop_zoom, terminal_opacity }
 }
 
 fn parse_string(json: &str, key: &str) -> Option<String> {

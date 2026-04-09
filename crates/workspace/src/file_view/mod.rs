@@ -3,6 +3,7 @@ pub mod highlight;
 
 use gpui::*;
 use gpui::prelude::*;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -15,6 +16,13 @@ pub enum FileViewEvent {
 }
 
 impl gpui::EventEmitter<FileViewEvent> for FileView {}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum DiffLineMarker {
+    Added,
+    Deleted,
+    Fold,
+}
 
 pub struct FileView {
     path: PathBuf,
@@ -41,9 +49,15 @@ pub struct FileView {
     matched_bracket: Option<(usize, usize)>,
     // Scroll
     scroll_handle: ScrollHandle,
+    pub scroll_x: f32,
     // Auto-scroll during selection drag
     auto_scroll_speed: f32,
     auto_scroll_task: Option<Task<()>>,
+    // Diff support
+    pub readonly: bool,
+    pub compact: bool,
+    pub diff_markers: HashMap<usize, DiffLineMarker>,
+    pub line_numbers: Option<Vec<u32>>, // custom line numbers (0 = hidden)
 }
 
 impl FileView {
@@ -105,8 +119,78 @@ impl FileView {
             find_focus,
             matched_bracket: None,
             scroll_handle,
+            scroll_x: 0.0,
             auto_scroll_speed: 0.0,
             auto_scroll_task: None,
+            readonly: false,
+            compact: false,
+            diff_markers: HashMap::new(),
+            line_numbers: None,
+        }
+    }
+
+    /// Create a FileView from string content (e.g. HEAD version for diff).
+    pub fn new_with_content(path: PathBuf, content: String, readonly: bool, compact: bool, cx: &mut Context<Self>) -> Self {
+        let filename = path.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let ext = path.extension()
+            .map(|e| e.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        let buffer = Buffer::new(&content);
+        let line_count = buffer.line_count();
+        let lang = lang_for_ext(&ext);
+
+        let mut token_cache: Vec<Option<Vec<Token>>> = Vec::with_capacity(line_count);
+        let mut block_comment_state = vec![false; line_count + 1];
+        if let Some(lang_def) = lang {
+            let mut in_bc = false;
+            for row in 0..line_count {
+                block_comment_state[row] = in_bc;
+                let (tokens, new_bc) = tokenize_line(buffer.line(row), lang_def, in_bc);
+                in_bc = new_bc;
+                token_cache.push(Some(tokens));
+            }
+            block_comment_state.push(in_bc);
+        } else {
+            for _ in 0..line_count {
+                token_cache.push(None);
+            }
+        }
+
+        let focus_handle = cx.focus_handle();
+        let find_focus = cx.focus_handle();
+        let scroll_handle = ScrollHandle::new();
+
+        Self {
+            path,
+            buffer,
+            filename,
+            ext,
+            cursor_row: 0,
+            cursor_col: 0,
+            modified: false,
+            focus_handle,
+            selection: None,
+            selecting: false,
+            lang,
+            token_cache,
+            block_comment_state,
+            find_open: false,
+            find_query: String::new(),
+            find_matches: Vec::new(),
+            find_current: 0,
+            find_focus,
+            matched_bracket: None,
+            scroll_handle,
+            scroll_x: 0.0,
+            auto_scroll_speed: 0.0,
+            auto_scroll_task: None,
+            readonly,
+            compact,
+            diff_markers: HashMap::new(),
+            line_numbers: None,
         }
     }
 
@@ -698,22 +782,42 @@ impl FileView {
     // ── Line rendering ─────────────────────────────
 
     fn render_line(&mut self, row: usize, line_num_width: f32, is_focused: bool, cx: &mut Context<Self>) -> Stateful<Div> {
+        // Fold separator — thin line instead of a full row
+        if self.diff_markers.get(&row) == Some(&DiffLineMarker::Fold) {
+            return div()
+                .id(ElementId::Name(format!("line-{}", row).into()))
+                .w_full()
+                .h(px(6.))
+                .flex().items_center()
+                .child(div().w_full().h(px(1.)).bg(theme::surface1()));
+        }
+
         let line = self.buffer.line(row).to_string();
-        let is_cursor_row = row == self.cursor_row && is_focused;
+        let is_cursor_row = row == self.cursor_row && is_focused && !self.readonly;
         let cursor_col = self.cursor_col;
 
         // Get tokens
         let tokens = self.get_tokens(row);
 
+        let diff_marker = self.diff_markers.get(&row).copied();
+        let diff_bg = match diff_marker {
+            Some(DiffLineMarker::Deleted) => Some(rgb(0x2a1518)),
+            Some(DiffLineMarker::Added)   => Some(rgb(0x152a18)),
+            _ => None,
+        };
+
+        let scroll_x = self.scroll_x;
         let mut line_el = div()
             .id(ElementId::Name(format!("line-{}", row).into()))
             .flex()
             .flex_row()
             .w_full()
             .h(px(20.))
-            .when(is_cursor_row, |d| d.bg(theme::surface0()));
+            .when_some(diff_bg, |d: Stateful<Div>, bg| d.bg(bg))
+            .when(is_cursor_row && !self.readonly, |d| d.bg(theme::surface0()));
 
-        // Mouse handlers
+        // Mouse handlers (disabled in readonly mode)
+        if !self.readonly {
         line_el = line_el
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
                 this.focus_handle.focus(window);
@@ -743,16 +847,41 @@ impl FileView {
                     cx.notify();
                 }
             }));
+        }
 
-        // Line number
+        // Diff marker bar (3px)
+        if matches!(diff_marker, Some(DiffLineMarker::Added) | Some(DiffLineMarker::Deleted)) {
+            let marker_color = match diff_marker {
+                Some(DiffLineMarker::Deleted) => theme::red(),
+                Some(DiffLineMarker::Added)   => theme::green(),
+                _ => unreachable!(),
+            };
+            line_el = line_el.child(
+                div().w(px(3.)).h(px(20.)).flex_shrink_0().bg(marker_color),
+            );
+        }
+
+        // Line number (use custom map if available)
+        let display_num = if let Some(ref nums) = self.line_numbers {
+            let n = nums.get(row).copied().unwrap_or(0);
+            if n > 0 { format!("{}", n) } else { String::new() }
+        } else {
+            format!("{}", row + 1)
+        };
+        let num_color = match diff_marker {
+            Some(DiffLineMarker::Deleted) => theme::red(),
+            Some(DiffLineMarker::Added)   => theme::green(),
+            _ => if is_cursor_row { theme::text() } else { theme::overlay() },
+        };
+        let num_width = if diff_marker.is_some() { line_num_width + 9. } else { line_num_width + 12. };
         line_el = line_el.child(
             div()
-                .w(px(line_num_width + 12.))
+                .w(px(num_width))
                 .flex_shrink_0()
                 .text_right()
                 .pr(px(12.))
-                .text_color(if is_cursor_row { theme::text() } else { theme::overlay() })
-                .child(format!("{}", row + 1)),
+                .text_color(num_color)
+                .child(display_num),
         );
 
         // Line content
@@ -836,7 +965,15 @@ impl FileView {
         }
 
         line_el = line_el.child(
-            div().flex_1().flex().flex_row().items_center().children(content_children),
+            div()
+                .flex_1().min_w(px(0.)).overflow_hidden()
+                .child(
+                    div()
+                        .flex_shrink_0().flex().flex_row().items_center()
+                        .pl(px(4.))
+                        .ml(px(-scroll_x))
+                        .children(content_children),
+                ),
         );
 
         line_el
@@ -863,7 +1000,12 @@ impl Focusable for FileView {
 impl Render for FileView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let line_count = self.buffer.line_count();
-        let line_num_width = format!("{}", line_count).len().max(3) as f32 * 9.0;
+        let max_line_num = if let Some(ref nums) = self.line_numbers {
+            nums.iter().copied().max().unwrap_or(line_count as u32) as usize
+        } else {
+            line_count
+        };
+        let line_num_width = format!("{}", max_line_num).len().max(3) as f32 * 9.0;
         let is_focused = self.focus_handle.is_focused(window);
         let cursor_row = self.cursor_row;
         let cursor_col = self.cursor_col;
@@ -885,10 +1027,13 @@ impl Render for FileView {
 
         self.update_bracket_match();
 
+        let compact = self.compact;
+
         div()
             .flex()
             .flex_col()
-            .size_full()
+            .when(!compact, |d: Div| d.size_full())
+            .when(compact, |d: Div| d.w_full())
             .text_sm()
             .font_family("Berkeley Mono, SF Mono, Menlo, monospace")
             .track_focus(&self.focus_handle)
@@ -974,15 +1119,17 @@ impl Render for FileView {
                 // Cmd shortcuts
                 if ev.keystroke.modifiers.platform {
                     match ev.keystroke.key.as_str() {
-                        "s" => { this.save(cx); cx.notify(); return; }
+                        "s" => { if !this.readonly { this.save(cx); } cx.notify(); return; }
                         "a" => { this.select_all(); cx.notify(); return; }
                         "d" => {
+                            if this.readonly { return; }
                             this.duplicate_line(cx);
                             this.scroll_to_cursor();
                             cx.notify();
                             return;
                         }
                         "/" => {
+                            if this.readonly { return; }
                             this.comment_toggle(cx);
                             cx.notify();
                             return;
@@ -1007,6 +1154,7 @@ impl Render for FileView {
                             return;
                         }
                         "z" => {
+                            if this.readonly { return; }
                             if shift {
                                 if let Some((r, c)) = this.buffer.redo() {
                                     this.cursor_row = r;
@@ -1038,7 +1186,7 @@ impl Render for FileView {
                             let text = this.get_selected_text();
                             if !text.is_empty() {
                                 cx.write_to_clipboard(ClipboardItem::new_string(text));
-                                if ev.keystroke.key.as_str() == "x" {
+                                if ev.keystroke.key.as_str() == "x" && !this.readonly {
                                     this.delete_selection();
                                     this.mark_modified(cx);
                                 }
@@ -1047,6 +1195,7 @@ impl Render for FileView {
                             return;
                         }
                         "v" => {
+                            if this.readonly { return; }
                             if let Some(item) = cx.read_from_clipboard() {
                                 if let Some(text) = item.text() {
                                     this.delete_selection();
@@ -1094,20 +1243,24 @@ impl Render for FileView {
                 }
 
                 let handled = match ev.keystroke.key.as_str() {
-                    "enter" => { this.insert_newline(cx); this.scroll_to_cursor(); true }
+                    "enter" => { if !this.readonly { this.insert_newline(cx); this.scroll_to_cursor(); } true }
                     "backspace" => {
-                        if alt { this.delete_word_left(cx); }
-                        else { this.backspace(cx); }
-                        this.scroll_to_cursor();
+                        if !this.readonly {
+                            if alt { this.delete_word_left(cx); }
+                            else { this.backspace(cx); }
+                            this.scroll_to_cursor();
+                        }
                         true
                     }
-                    "delete" => { this.delete_forward(cx); true }
+                    "delete" => { if !this.readonly { this.delete_forward(cx); } true }
                     "tab" => {
-                        if shift { this.dedent_lines(cx); }
-                        else { this.insert_tab(cx); }
+                        if !this.readonly {
+                            if shift { this.dedent_lines(cx); }
+                            else { this.insert_tab(cx); }
+                        }
                         true
                     }
-                    "space" => { this.insert_char(" ", cx); true }
+                    "space" => { if !this.readonly { this.insert_char(" ", cx); } true }
                     "left" => {
                         if alt { this.move_word_left(shift); }
                         else { this.move_left(shift); }
@@ -1151,7 +1304,7 @@ impl Render for FileView {
                     _ => false,
                 };
 
-                if !handled {
+                if !handled && !this.readonly {
                     if let Some(key_char) = &ev.keystroke.key_char {
                         if !ev.keystroke.modifiers.platform {
                             this.delete_selection();
@@ -1171,18 +1324,20 @@ impl Render for FileView {
                 this.update_bracket_match();
                 cx.notify();
             }))
-            // File header
-            .child(
-                div()
-                    .flex().flex_row().items_center()
-                    .w_full().h(px(28.)).min_h(px(28.)).flex_shrink_0()
-                    .px(px(10.))
-                    .border_b_1().border_color(theme::surface1())
-                    .child(div().text_color(theme::text()).child(title_display))
-                    .child(div().ml(px(8.)).text_xs().text_color(theme::overlay()).child(self.path.to_string_lossy().to_string())),
-            )
+            // File header (hidden in compact/diff mode)
+            .when(!self.compact, |d: Div| {
+                d.child(
+                    div()
+                        .flex().flex_row().items_center()
+                        .w_full().h(px(28.)).min_h(px(28.)).flex_shrink_0()
+                        .px(px(10.))
+                        .border_b_1().border_color(theme::surface1())
+                        .child(div().text_color(theme::text()).child(title_display.clone()))
+                        .child(div().ml(px(8.)).text_xs().text_color(theme::overlay()).child(self.path.to_string_lossy().to_string())),
+                )
+            })
             // Find bar
-            .when(find_open, |d: Div| {
+            .when(find_open && !self.compact, |d: Div| {
                 d.child(
                     div()
                         .flex().flex_row().items_center()
@@ -1218,40 +1373,58 @@ impl Render for FileView {
                         ),
                 )
             })
-            // Content — render all lines in scrollable div
-            // (uniform_list requires non-entity closure; we use overflow_y_scroll instead)
-            .child(
-                div()
-                    .id("file-content-scroll")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll_handle)
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .p(px(4.))
-                            .children(
-                                (0..self.buffer.line_count()).map(|row| {
-                                    self.render_line(row, line_num_width, is_focused, cx).into_any_element()
-                                }).collect::<Vec<_>>()
-                            ),
-                    ),
-            )
-            // Status bar
-            .child(
-                div()
-                    .flex().flex_row().items_center()
-                    .w_full().h(px(22.)).min_h(px(22.)).flex_shrink_0()
-                    .px(px(10.))
-                    .bg(theme::surface0())
-                    .border_t_1().border_color(theme::surface1())
-                    .text_xs().text_color(theme::subtext())
-                    .child(format!("Ln {}, Col {}", cursor_row + 1, cursor_col + 1))
-                    .child(div().flex_1())
-                    .child(div().mr(px(12.)).child(lang_label))
-                    .child(div().mr(px(12.)).child("UTF-8"))
-                    .child("4 Spaces"),
-            )
+            // Content
+            .child({
+                let lines: Vec<AnyElement> = (0..self.buffer.line_count()).map(|row| {
+                    self.render_line(row, line_num_width, is_focused, cx).into_any_element()
+                }).collect();
+
+                let content_inner = div().flex().flex_col().p(px(4.)).children(lines);
+
+                if compact {
+                    // No scroll — parent (DiffView) handles scrolling
+                    div().w_full().child(content_inner).into_any_element()
+                } else {
+                    div()
+                        .id("file-content-scroll")
+                        .flex_1()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.scroll_handle)
+                        .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _window, cx| {
+                            let (dx, dy): (f32, f32) = match &ev.delta {
+                                ScrollDelta::Lines(d) => (d.x * 20.0, d.y * 20.0),
+                                ScrollDelta::Pixels(d) => {
+                                    let x: f32 = d.x.into();
+                                    let y: f32 = d.y.into();
+                                    (x, y)
+                                }
+                            };
+                            // Rail: only apply horizontal if clearly horizontal (ratio 3:1)
+                            if dx.abs() > dy.abs() * 3.0 {
+                                this.scroll_x = (this.scroll_x - dx).max(0.0);
+                                cx.notify();
+                            }
+                        }))
+                        .child(content_inner)
+                        .into_any_element()
+                }
+            })
+            // Status bar (hidden in compact/diff mode)
+            .when(!self.compact, |d: Div| {
+                d.child(
+                    div()
+                        .flex().flex_row().items_center()
+                        .w_full().h(px(22.)).min_h(px(22.)).flex_shrink_0()
+                        .px(px(10.))
+                        .bg(theme::surface0())
+                        .border_t_1().border_color(theme::surface1())
+                        .text_xs().text_color(theme::subtext())
+                        .child(format!("Ln {}, Col {}", cursor_row + 1, cursor_col + 1))
+                        .child(div().flex_1())
+                        .child(div().mr(px(12.)).child(lang_label.to_string()))
+                        .child(div().mr(px(12.)).child("UTF-8"))
+                        .child("4 Spaces"),
+                )
+            })
     }
 }

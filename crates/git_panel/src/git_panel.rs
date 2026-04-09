@@ -10,6 +10,7 @@ use ide_workspace::theme as colors;
 pub enum RunnerEvent {
     Start(String),
     Stop,
+    PushRequested,
 }
 
 impl gpui::EventEmitter<RunnerEvent> for CommitPanel {}
@@ -122,21 +123,7 @@ impl Render for CommitPanel {
                         if this.is_pushing {
                             return;
                         }
-                        this.is_pushing = true;
-                        cx.notify();
-
-                        let root = this.root_path.clone();
-                        cx.spawn(async |this: WeakEntity<CommitPanel>, cx: &mut AsyncApp| {
-                            let result = cx.background_executor().spawn(async move {
-                                crate::operations::one_button_commit_and_push(&root)
-                            }).await;
-
-                            this.update(cx, |view, cx| {
-                                let _ = result;
-                                view.is_pushing = false;
-                                cx.notify();
-                            }).ok();
-                        }).detach();
+                        cx.emit(RunnerEvent::PushRequested);
                     })),
             )
     }

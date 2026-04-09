@@ -241,6 +241,7 @@ pub mod theme {
     // ── Wallpaper state ──────────────────────────────
     static WALLPAPER: Mutex<Option<String>> = Mutex::new(None);
     static WALLPAPER_OPACITY: Mutex<f32> = Mutex::new(0.65);
+    static TERMINAL_OPACITY: Mutex<f32> = Mutex::new(1.0);
 
     pub fn set_wallpaper(path: Option<String>) {
         *WALLPAPER.lock().unwrap() = path;
@@ -260,6 +261,14 @@ pub mod theme {
 
     pub fn wallpaper_opacity() -> f32 {
         *WALLPAPER_OPACITY.lock().unwrap()
+    }
+
+    pub fn set_terminal_opacity(opacity: f32) {
+        *TERMINAL_OPACITY.lock().unwrap() = opacity.clamp(0.0, 1.0);
+    }
+
+    pub fn terminal_opacity() -> f32 {
+        *TERMINAL_OPACITY.lock().unwrap()
     }
 
     fn translucent(mut color: Rgba, alpha: f32) -> Rgba {
@@ -295,4 +304,10 @@ pub mod theme {
     pub fn base_bg() -> Rgba { translucent(base(), 0.30) }
     pub fn mantle_bg() -> Rgba { translucent(rgb(c().mantle), 0.45) }
     pub fn surface0_bg() -> Rgba { translucent(surface0(), 0.40) }
+
+    // Opaque variants (ignore wallpaper — for views that need solid backgrounds)
+    pub fn base_solid() -> Rgba { rgb(c().base) }
+    pub fn mantle_solid() -> Rgba { rgb(c().mantle) }
+    pub fn surface0_solid() -> Rgba { rgb(c().surface0) }
+    pub fn surface1_solid() -> Rgba { rgb(c().surface1) }
 }
