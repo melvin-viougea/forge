@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::status::{get_changes, ChangeStatus, GitFileChange};
 use ide_workspace::theme as colors;
-use ide_workspace::{DiffLineMarker, FileView, GitGutterMarker};
+use ide_workspace::GitGutterMarker;
 
 #[derive(Clone)]
 pub struct DiffLine {
@@ -214,58 +214,21 @@ fn render_pane_half(
         )
 }
 
-fn render_header(left_label: &str, right_label: &str) -> Div {
-    div()
-        .flex()
-        .flex_row()
-        .w_full()
-        .h(px(24.))
-        .flex_shrink_0()
-        .bg(colors::surface0_solid())
-        .border_b_1()
-        .border_color(colors::surface1_solid())
-        .child(
-            div()
-                .flex_1()
-                .h_full()
-                .flex()
-                .items_center()
-                .pl(px(52.))
-                .text_xs()
-                .text_color(colors::subtext())
-                .child(left_label.to_string()),
-        )
-        .child(div().w(px(1.)).h_full().bg(colors::surface1_solid()))
-        .child(
-            div()
-                .flex_1()
-                .h_full()
-                .flex()
-                .items_center()
-                .pl(px(52.))
-                .text_xs()
-                .text_color(colors::subtext())
-                .child(right_label.to_string()),
-        )
-}
 
-// ── DiffView (two FileViews side by side) ───────────────────
+// ── DiffView (side-by-side with virtualization) ─────────────
 
 pub struct DiffView {
     pub file_path: Option<PathBuf>,
     root_path: PathBuf,
-    left: Option<Entity<FileView>>,
-    right: Option<Entity<FileView>>,
     additions: usize,
     deletions: usize,
     scroll_y: f32,
-    line_count: usize,
-    fold_count: usize,
+    rows: Vec<SbsRow>,
     scroll_handle: ScrollHandle,
 }
 
 impl DiffView {
-    pub fn new_for_file(root_path: PathBuf, file_path: PathBuf, cx: &mut Context<Self>) -> Self {
+    pub fn new_for_file(root_path: PathBuf, file_path: PathBuf, _cx: &mut Context<Self>) -> Self {
         let diff_lines = generate_head_to_workdir_diff(&root_path, &file_path);
         let additions = diff_lines
             .iter()
@@ -276,80 +239,19 @@ impl DiffView {
             .filter(|l| l.kind == DiffLineKind::Deletion)
             .count();
 
-        // Convert to side-by-side rows (already handles alignment/padding)
-        let rows = to_side_by_side(&diff_lines);
-
-        // Build collapsed content for each side from SbsRows
-        let mut left_lines = Vec::new();
-        let mut right_lines = Vec::new();
-        let mut left_nums = Vec::new();
-        let mut right_nums = Vec::new();
-        let mut left_markers: HashMap<usize, DiffLineMarker> = HashMap::new();
-        let mut right_markers: HashMap<usize, DiffLineMarker> = HashMap::new();
-
-        for row in &rows {
-            let idx = left_lines.len();
-
-            if row.left_kind == SbsKind::Hunk {
-                // Skip fold separator if it's the very first row (no collapsed context above)
-                if idx == 0 {
-                    continue;
-                }
-                // Fold separator
-                left_lines.push(String::new());
-                right_lines.push(String::new());
-                left_nums.push(0);
-                right_nums.push(0);
-                left_markers.insert(idx, DiffLineMarker::Fold);
-                right_markers.insert(idx, DiffLineMarker::Fold);
-                continue;
-            }
-
-            left_lines.push(row.left_text.trim_end_matches('\n').to_string());
-            right_lines.push(row.right_text.trim_end_matches('\n').to_string());
-            left_nums.push(row.left_num.unwrap_or(0));
-            right_nums.push(row.right_num.unwrap_or(0));
-
-            if row.left_kind == SbsKind::Changed {
-                left_markers.insert(idx, DiffLineMarker::Deleted);
-            }
-            if row.right_kind == SbsKind::Changed {
-                right_markers.insert(idx, DiffLineMarker::Added);
-            }
+        let mut rows = to_side_by_side(&diff_lines);
+        // Remove leading hunk separator
+        if rows.first().map(|r| r.left_kind == SbsKind::Hunk).unwrap_or(false) {
+            rows.remove(0);
         }
 
-        let left_content = left_lines.join("\n");
-        let right_content = right_lines.join("\n");
-
-        let line_count = left_lines.len();
-        let fold_count = left_markers
-            .values()
-            .filter(|m| **m == DiffLineMarker::Fold)
-            .count();
-
-        let fp = file_path.clone();
-        let left = cx.new(|cx| {
-            let mut view = FileView::new_with_content(fp.clone(), left_content, true, true, cx);
-            view.diff_markers = left_markers;
-            view.line_numbers = Some(left_nums);
-            view
-        });
-        let right = cx.new(|cx| {
-            let mut view = FileView::new_with_content(fp.clone(), right_content, false, true, cx);
-            view.diff_markers = right_markers;
-            view.line_numbers = Some(right_nums);
-            view
-        });
         Self {
             file_path: Some(file_path),
             root_path,
-            left: Some(left),
-            right: Some(right),
             additions,
             deletions,
             scroll_y: 0.0,
-            line_count,
-            fold_count,
+            rows,
             scroll_handle: ScrollHandle::new(),
         }
     }
@@ -375,7 +277,75 @@ impl Render for DiffView {
         let additions = self.additions;
         let deletions = self.deletions;
 
-        let mut root = div()
+        // Compute row heights: hunk separators = 1px, normal rows = LINE_H
+        let total_rows = self.rows.len();
+        let hunk_h = 1.0_f32;
+
+        // Compute content height
+        let content_height: f32 = self.rows.iter()
+            .map(|r| if r.left_kind == SbsKind::Hunk { hunk_h } else { LINE_H })
+            .sum();
+
+        let viewport_h: f32 = {
+            let h: f32 = self.scroll_handle.bounds().size.height.into();
+            if h > 0.0 { h } else { 600.0 }
+        };
+        let scroll_y = self.scroll_y;
+        let needs_scroll = content_height > viewport_h;
+
+        // Viewport virtualization: find visible row range
+        let buffer = 20_usize;
+        let (first, last) = {
+            let mut y = 0.0_f32;
+            let mut first_row = 0;
+            let mut last_row = total_rows;
+            for (i, row) in self.rows.iter().enumerate() {
+                let h = if row.left_kind == SbsKind::Hunk { hunk_h } else { LINE_H };
+                if y + h <= scroll_y {
+                    first_row = i + 1;
+                }
+                if y > scroll_y + viewport_h {
+                    last_row = i;
+                    break;
+                }
+                y += h;
+            }
+            let f = first_row.saturating_sub(buffer);
+            let l = (last_row + buffer).min(total_rows);
+            (f, l)
+        };
+
+        // Spacer heights
+        let top_spacer: f32 = self.rows[..first].iter()
+            .map(|r| if r.left_kind == SbsKind::Hunk { hunk_h } else { LINE_H })
+            .sum();
+        let bottom_spacer: f32 = if last < total_rows {
+            self.rows[last..].iter()
+                .map(|r| if r.left_kind == SbsKind::Hunk { hunk_h } else { LINE_H })
+                .sum()
+        } else {
+            0.0
+        };
+
+        // Render only visible rows
+        let divider = colors::surface1_solid();
+        let base = colors::base_solid();
+        let visible_rows: Vec<AnyElement> = self.rows[first..last].iter().map(|row| {
+            if row.left_kind == SbsKind::Hunk {
+                return div().w_full().h(px(hunk_h)).bg(divider).into_any_element();
+            }
+            div()
+                .flex()
+                .flex_row()
+                .w_full()
+                .h(px(LINE_H))
+                .child(render_pane_half(row.left_kind, row.left_num, &row.left_text, true, base))
+                .child(div().w(px(1.)).h_full().bg(divider))
+                .child(render_pane_half(row.right_kind, row.right_num, &row.right_text, false, base))
+                .into_any_element()
+        }).collect();
+
+        div()
             .flex()
             .flex_col()
             .size_full()
@@ -417,117 +387,50 @@ impl Render for DiffView {
                             .flex_row()
                             .gap(px(6.))
                             .text_xs()
-                            .child(
-                                div()
-                                    .text_color(colors::green())
-                                    .child(format!("+{}", additions)),
-                            )
-                            .child(
-                                div()
-                                    .text_color(colors::red())
-                                    .child(format!("-{}", deletions)),
-                            ),
+                            .child(div().text_color(colors::green()).child(format!("+{}", additions)))
+                            .child(div().text_color(colors::red()).child(format!("-{}", deletions))),
                     ),
-            );
-
-        // Two FileViews side by side with fully manual scroll (rail snapping)
-        if let (Some(left), Some(right)) = (&self.left, &self.right) {
-            let scroll_y = self.scroll_y;
-            let viewport_h: f32 = {
-                let h: f32 = self.scroll_handle.bounds().size.height.into();
-                if h > 0.0 {
-                    h
-                } else {
-                    600.0
-                }
-            };
-            // Normal lines = 20px, fold lines = 6px, plus 8px padding (p(4) top+bottom)
-            let normal_lines = (self.line_count - self.fold_count) as f32;
-            let fold_lines = self.fold_count as f32;
-            let content_height = normal_lines * 20.0 + fold_lines * 6.0 + 8.0;
-            let needs_scroll = content_height > viewport_h;
-            let _max_scroll = (content_height - viewport_h).max(0.0);
-            root =
-                root.child(
-                    div()
-                        .id("diff-scroll")
-                        .flex_1()
-                        .min_h(px(0.))
-                        .overflow_hidden()
-                        .track_scroll(&self.scroll_handle)
-                        .on_scroll_wheel(cx.listener(
-                            move |this, ev: &ScrollWheelEvent, _window, cx| {
-                                let (dx, dy): (f32, f32) = match &ev.delta {
-                                    ScrollDelta::Lines(d) => (d.x * 20.0, d.y * 20.0),
-                                    ScrollDelta::Pixels(d) => {
-                                        let x: f32 = d.x.into();
-                                        let y: f32 = d.y.into();
-                                        (x, y)
-                                    }
-                                };
-                                let vh: f32 = {
-                                    let h: f32 = this.scroll_handle.bounds().size.height.into();
-                                    if h > 0.0 {
-                                        h
-                                    } else {
-                                        600.0
-                                    }
-                                };
-                                let nl = (this.line_count - this.fold_count) as f32;
-                                let fl = this.fold_count as f32;
-                                let ch = nl * 20.0 + fl * 6.0 + 8.0;
-                                let ms = (ch - vh).max(0.0);
-                                // Rail snapping (ratio 3:1)
-                                if dx.abs() > dy.abs() * 3.0 {
-                                    // Horizontal rail
-                                    if let (Some(left), Some(right)) = (&this.left, &this.right) {
-                                        let new_x = (left.read(cx).scroll_x - dx).max(0.0);
-                                        left.update(cx, |v: &mut FileView, _| v.scroll_x = new_x);
-                                        right.update(cx, |v: &mut FileView, _| v.scroll_x = new_x);
-                                    }
-                                } else {
-                                    // Vertical rail
-                                    this.scroll_y = (this.scroll_y - dy).clamp(0.0, ms);
-                                }
-                                cx.notify();
-                            },
-                        ))
-                        .child(
-                            div()
-                                .mt(px(-scroll_y))
-                                .w_full()
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_row()
-                                        .w_full()
-                                        .child(
-                                            div()
-                                                .flex_1()
-                                                .min_w(px(0.))
-                                                .overflow_hidden()
-                                                .child(left.clone()),
-                                        )
-                                        .child(div().w(px(1.)).bg(colors::surface1_solid()))
-                                        .child(
-                                            div()
-                                                .flex_1()
-                                                .min_w(px(0.))
-                                                .overflow_hidden()
-                                                .child(right.clone()),
-                                        ),
-                                )
-                                // End-of-file separator — only when content fits without scrolling
-                                .when(!needs_scroll, |d| {
-                                    d.child(div().w_full().flex_1().flex().pt(px(4.)).child(
-                                        div().w_full().h(px(1.)).bg(colors::surface1_solid()),
-                                    ))
-                                }),
-                        ),
-                );
-        }
-
-        root
+            )
+            // Virtualized side-by-side diff
+            .child(
+                div()
+                    .id("diff-scroll")
+                    .flex_1()
+                    .min_h(px(0.))
+                    .overflow_hidden()
+                    .track_scroll(&self.scroll_handle)
+                    .on_scroll_wheel(cx.listener(
+                        move |this, ev: &ScrollWheelEvent, _window, cx| {
+                            let dy: f32 = match &ev.delta {
+                                ScrollDelta::Lines(d) => d.y * 20.0,
+                                ScrollDelta::Pixels(d) => d.y.into(),
+                            };
+                            let vh: f32 = {
+                                let h: f32 = this.scroll_handle.bounds().size.height.into();
+                                if h > 0.0 { h } else { 600.0 }
+                            };
+                            let ch: f32 = this.rows.iter()
+                                .map(|r| if r.left_kind == SbsKind::Hunk { 1.0 } else { LINE_H })
+                                .sum();
+                            let ms = (ch - vh).max(0.0);
+                            this.scroll_y = (this.scroll_y - dy).clamp(0.0, ms);
+                            cx.notify();
+                        },
+                    ))
+                    .child(
+                        div()
+                            .mt(px(-scroll_y))
+                            .w_full()
+                            .child(div().h(px(top_spacer)).flex_shrink_0())
+                            .children(visible_rows)
+                            .child(div().h(px(bottom_spacer)).flex_shrink_0())
+                            .when(!needs_scroll, |d| {
+                                d.child(div().w_full().flex_1().flex().pt(px(4.)).child(
+                                    div().w_full().h(px(1.)).bg(colors::surface1_solid()),
+                                ))
+                            }),
+                    ),
+            )
     }
 }
 
@@ -732,66 +635,169 @@ pub fn compute_git_gutter(root: &Path, file_path: &Path) -> HashMap<usize, GitGu
 
 // ── Commit Diff View ────────────────────────────────────────
 
+struct CommitFileDiff {
+    path: String,
+    filename: String,
+    additions: usize,
+    deletions: usize,
+    lines: Vec<DiffLine>,
+}
+
 pub struct CommitDiffView {
     hash: String,
     message: String,
-    lines: Vec<DiffLine>,
+    files: Vec<CommitFileDiff>,
+    expanded: std::collections::HashSet<usize>,
 }
 
 impl CommitDiffView {
     pub fn new(root_path: &Path, hash: &str, message: &str) -> Self {
-        let lines = generate_commit_diff(root_path, hash);
+        let files = generate_commit_diff_by_file(root_path, hash);
         Self {
             hash: hash.to_string(),
             message: message.to_string(),
-            lines,
+            files,
+            expanded: std::collections::HashSet::new(),
         }
     }
 }
 
-fn generate_commit_diff(root: &Path, hash: &str) -> Vec<DiffLine> {
-    let mut diff_lines = Vec::new();
+fn generate_commit_diff_by_file(root: &Path, hash: &str) -> Vec<CommitFileDiff> {
+    let mut file_map: Vec<(String, Vec<DiffLine>)> = Vec::new();
+
     let repo = match git2::Repository::discover(root) {
         Ok(r) => r,
-        Err(_) => return diff_lines,
+        Err(_) => return Vec::new(),
     };
     let commit = match repo.revparse_single(hash).and_then(|o| o.peel_to_commit()) {
         Ok(c) => c,
-        Err(_) => return diff_lines,
+        Err(_) => return Vec::new(),
     };
     let tree = match commit.tree() {
         Ok(t) => t,
-        Err(_) => return diff_lines,
+        Err(_) => return Vec::new(),
     };
     let parent_tree = commit.parents().next().and_then(|p| p.tree().ok());
     let diff = match repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None) {
         Ok(d) => d,
-        Err(_) => return diff_lines,
+        Err(_) => return Vec::new(),
     };
 
-    diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
+    diff.print(git2::DiffFormat::Patch, |delta, _hunk, line| {
+        let file_path = delta.new_file().path()
+            .or_else(|| delta.old_file().path())
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+
         let content = String::from_utf8_lossy(line.content()).to_string();
         let kind = match line.origin() {
             '+' => DiffLineKind::Addition,
             '-' => DiffLineKind::Deletion,
-            'H' | 'F' => DiffLineKind::Hunk,
+            'H' => DiffLineKind::Hunk,
+            'F' => return true, // skip file headers
             _ => DiffLineKind::Context,
         };
-        diff_lines.push(DiffLine {
-            kind,
-            content,
-            old_line: line.old_lineno(),
-            new_line: line.new_lineno(),
+
+        if file_map.is_empty() || file_map.last().unwrap().0 != file_path {
+            file_map.push((file_path, Vec::new()));
+        }
+        file_map.last_mut().unwrap().1.push(DiffLine {
+            kind, content, old_line: line.old_lineno(), new_line: line.new_lineno(),
         });
         true
-    })
-    .ok();
+    }).ok();
 
-    diff_lines
+    file_map.into_iter().map(|(path, lines)| {
+        let additions = lines.iter().filter(|l| l.kind == DiffLineKind::Addition).count();
+        let deletions = lines.iter().filter(|l| l.kind == DiffLineKind::Deletion).count();
+        let filename = Path::new(&path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.clone());
+        CommitFileDiff { path, filename, additions, deletions, lines }
+    }).collect()
 }
 
 impl Render for CommitDiffView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let total_add: usize = self.files.iter().map(|f| f.additions).sum();
+        let total_del: usize = self.files.iter().map(|f| f.deletions).sum();
+        let file_count = self.files.len();
+
+        let mut file_entries: Vec<AnyElement> = Vec::new();
+        for (idx, file) in self.files.iter().enumerate() {
+            let is_expanded = self.expanded.contains(&idx);
+            let arrow = if is_expanded { "▼" } else { "▶" };
+
+            // File header row
+            file_entries.push(
+                div()
+                    .id(ElementId::Name(format!("cfile-{}", idx).into()))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .w_full()
+                    .h(px(36.))
+                    .px(px(12.))
+                    .cursor_pointer()
+                    .bg(colors::mantle_solid())
+                    .border_b_1()
+                    .border_color(colors::surface0_solid())
+                    .hover(|d| d.bg(colors::surface0_solid()))
+                    .on_click(cx.listener(move |this, _ev, _window, cx| {
+                        if this.expanded.contains(&idx) {
+                            this.expanded.remove(&idx);
+                        } else {
+                            this.expanded.insert(idx);
+                        }
+                        cx.notify();
+                    }))
+                    .child(
+                        div().w(px(16.)).text_xs().text_color(colors::overlay()).child(arrow),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_color(colors::text())
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(format!("{} ", file.filename)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .truncate()
+                            .text_xs()
+                            .text_color(colors::overlay())
+                            .child(file.path.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .ml(px(6.))
+                            .flex()
+                            .flex_row()
+                            .gap(px(4.))
+                            .text_xs()
+                            .child(div().text_color(colors::green()).child(format!("+{}", file.additions)))
+                            .child(div().text_color(colors::red()).child(format!("-{}", file.deletions))),
+                    )
+                    .into_any_element(),
+            );
+
+            // Inline diff (when expanded)
+            if is_expanded {
+                let diff_rows = render_side_by_side(&file.lines);
+                file_entries.push(
+                    div()
+                        .w_full()
+                        .bg(colors::base_solid())
+                        .children(diff_rows)
+                        .into_any_element(),
+                );
+            }
+        }
+
         div()
             .flex()
             .flex_col()
@@ -799,7 +805,7 @@ impl Render for CommitDiffView {
             .bg(colors::base_solid())
             .text_sm()
             .font_family("Berkeley Mono, SF Mono, Menlo, monospace")
-            // Title bar
+            // Title bar with hash, message, stats
             .child(
                 div()
                     .flex()
@@ -825,20 +831,27 @@ impl Render for CommitDiffView {
                             .text_color(colors::text())
                             .truncate()
                             .child(self.message.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .flex()
+                            .flex_row()
+                            .gap(px(6.))
+                            .text_xs()
+                            .child(div().text_color(colors::overlay()).child(format!("{} file{}", file_count, if file_count != 1 { "s" } else { "" })))
+                            .child(div().text_color(colors::green()).child(format!("+{}", total_add)))
+                            .child(div().text_color(colors::red()).child(format!("-{}", total_del))),
                     ),
             )
-            // Column headers
-            .child(render_header("Before", "After"))
-            // Scrollable diff content
+            // Scrollable file list with inline diffs
             .child(
                 div()
                     .flex_1()
-                    .w_full()
                     .min_h(px(0.))
                     .id("commit-diff-scroll")
                     .overflow_y_scroll()
-                    .bg(colors::base_solid())
-                    .children(render_side_by_side(&self.lines)),
+                    .children(file_entries),
             )
     }
 }
