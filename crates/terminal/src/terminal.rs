@@ -78,7 +78,6 @@ impl TermColor {
                         let v = 8 + (idx - 232) * 10;
                         ((v as u32) << 16) | ((v as u32) << 8) | (v as u32)
                     }
-                    _ => 0xc9d1d9,
                 };
                 rgb(hex)
             }

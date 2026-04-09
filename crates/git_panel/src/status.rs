@@ -202,6 +202,34 @@ fn format_time_ago(secs: i64) -> String {
     format!("{}y", days / 365)
 }
 
+/// Fetch from remote and count how many commits we are behind the upstream branch.
+/// Returns 0 if up-to-date, no remote, or any error.
+pub fn check_commits_behind(root: &Path) -> usize {
+    // Silent fetch first
+    let _ = std::process::Command::new("git")
+        .args(["fetch", "--quiet"])
+        .current_dir(root)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    // Count commits behind upstream
+    let output = std::process::Command::new("git")
+        .args(["rev-list", "--count", "HEAD..@{u}"])
+        .current_dir(root)
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .parse::<usize>()
+                .unwrap_or(0)
+        }
+        _ => 0,
+    }
+}
+
 /// Get the current branch name
 pub fn get_branch_name(root: &Path) -> String {
     let repo = match git2::Repository::discover(root) {

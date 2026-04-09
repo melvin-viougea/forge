@@ -355,15 +355,6 @@ impl DiffView {
     }
 }
 
-fn get_head_content(root: &Path, file_path: &Path) -> Option<String> {
-    let repo = git2::Repository::discover(root).ok()?;
-    let rel_path = file_path.strip_prefix(root).ok()?;
-    let head = repo.head().ok()?;
-    let tree = head.peel_to_tree().ok()?;
-    let entry = tree.get_path(rel_path).ok()?;
-    let blob = repo.find_blob(entry.id()).ok()?;
-    Some(String::from_utf8_lossy(blob.content()).to_string())
-}
 
 impl Render for DiffView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -455,7 +446,7 @@ impl Render for DiffView {
             let fold_lines = self.fold_count as f32;
             let content_height = normal_lines * 20.0 + fold_lines * 6.0 + 8.0;
             let needs_scroll = content_height > viewport_h;
-            let max_scroll = (content_height - viewport_h).max(0.0);
+            let _max_scroll = (content_height - viewport_h).max(0.0);
             root =
                 root.child(
                     div()

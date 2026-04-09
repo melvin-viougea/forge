@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use ide_file_explorer::{FileExplorerPanel, FileExplorerEvent};
-use ide_git_panel::{CommitPanel, CommitDiffView, DiffView, ChangesReviewView, ChangesReviewEvent, GitChangesPanel, GitChangesEvent, GitLogPanel, GitLogEvent, RunnerEvent, compute_git_gutter};
+use ide_git_panel::{CommitPanel, CommitDiffView, DiffView, ChangesReviewView, ChangesReviewEvent, GitChangesPanel, GitChangesEvent, GitLogPanel, GitLogEvent, RunnerEvent, compute_git_gutter, check_commits_behind};
 use ide_workspace::theme::{self, ThemeName};
 use ide_workspace::{FileView, FileViewEvent, ImagePreviewView, MarkdownPreviewView};
 use ide_terminal::{LayoutDimensions, TerminalView, TerminalViewEvent};
@@ -65,7 +65,7 @@ impl Render for DragProjectPreview {
 struct ProjectEntry {
     name: String,
     path: PathBuf,
-    display_path: String,
+    _display_path: String,
 }
 
 /// Shorten a path for display: replace $HOME with ~
@@ -723,6 +723,7 @@ struct AppView {
     _project_subscription: Subscription,
     _workspace_subscription: Subscription,
     _update_task: Task<()>,
+    _remote_check_task: Task<()>,
 }
 
 /// Read image dimensions from PNG/JPEG file headers
@@ -1226,7 +1227,6 @@ impl AppView {
         let right_panel = cx.new(|cx| RightPanel::new(path.clone(), cx));
 
         // Subscribe to pane "+" events
-        let workspace = self.workspace.clone();
         let pane_sub = cx.subscribe(&pane, move |this: &mut AppView, _pane, event: &PaneEvent, cx| {
             match event {
                 PaneEvent::NewTabRequested => {
@@ -1449,6 +1449,9 @@ impl AppView {
                     this.open_diff_in_pane(&pane_for_gc, &root_for_gc, file_path.clone(), cx);
                 }
                 GitChangesEvent::FileOpenedDirect(file_path) => {
+                    this.open_file_editor(pane_for_gc2.clone(), file_path.clone(), cx);
+                }
+                GitChangesEvent::FilePreviewOpened(file_path) => {
                     this.open_file_in_pane(&pane_for_gc2, file_path.clone(), cx);
                 }
             }
@@ -1501,7 +1504,7 @@ impl AppView {
         let panel_path = self.project_states[idx].path.clone();
         let display_path = shorten_path(&panel_path);
         self.project_panel.update(cx, |panel, cx| {
-            panel.projects.push(ProjectEntry { name, path: panel_path, display_path });
+            panel.projects.push(ProjectEntry { name, path: panel_path, _display_path: display_path });
             panel.order.push(idx);
             panel.active_project = Some(idx);
             cx.notify();
@@ -1714,8 +1717,6 @@ impl Render for AppView {
                 // Bounds tracking for cursor-centered zoom
                 let container_bounds = self.crop_preview_bounds.clone();
                 let container_bounds_for_canvas = self.crop_preview_bounds.clone();
-                let entity = cx.entity().clone();
-
                 base = base.child(
                     div()
                         .id("crop-picker-overlay")
@@ -2986,6 +2987,7 @@ fn main() {
                         _project_subscription: project_sub,
                         _workspace_subscription: workspace_sub,
                         _update_task: update_task,
+                        _remote_check_task: Task::ready(()),
                     };
 
                     // Restore previous session
@@ -3026,6 +3028,37 @@ fn main() {
                             });
                         }
                     }
+
+                    // Periodic remote check (every 5 minutes)
+                    app_view._remote_check_task = cx.spawn(async move |this: WeakEntity<AppView>, cx: &mut AsyncApp| {
+                        // Initial check after 10 seconds
+                        cx.background_executor().timer(Duration::from_secs(10)).await;
+                        loop {
+                            // Get active project path
+                            let project_path = this.update(cx, |view, _cx| {
+                                view.active_project.map(|idx| view.project_states[idx].path.clone())
+                            }).ok().flatten();
+
+                            if let Some(path) = project_path {
+                                let behind = cx.background_executor().spawn(async move {
+                                    check_commits_behind(&path)
+                                }).await;
+
+                                if behind > 0 {
+                                    this.update(cx, |view, cx| {
+                                        let msg = if behind == 1 {
+                                            "1 commit to pull".to_string()
+                                        } else {
+                                            format!("{} commits to pull", behind)
+                                        };
+                                        view.add_toast("Pull", &msg, ToastKind::Progress, None, cx);
+                                    }).ok();
+                                }
+                            }
+
+                            cx.background_executor().timer(Duration::from_secs(300)).await;
+                        }
+                    });
 
                     app_view
                 })

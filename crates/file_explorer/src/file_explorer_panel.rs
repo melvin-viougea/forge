@@ -31,7 +31,7 @@ struct ContextMenuState {
 /// Flattened entry for rendering
 struct FlatEntry {
     entry: FileEntry,
-    children: Vec<usize>,
+    _children: Vec<usize>,
 }
 
 use ide_workspace::theme as colors;
@@ -47,7 +47,7 @@ impl FileExplorerPanel {
                 if let Some(status) = git_statuses.get(&entry.path) {
                     entry.git_status = status.clone();
                 }
-                FlatEntry { entry, children: Vec::new() }
+                FlatEntry { entry, _children: Vec::new() }
             })
             .collect();
 
@@ -110,7 +110,7 @@ impl FileExplorerPanel {
                 if let Some(status) = git_statuses.get(&entry.path) {
                     entry.git_status = status.clone();
                 }
-                FlatEntry { entry, children: Vec::new() }
+                FlatEntry { entry, _children: Vec::new() }
             })
             .collect();
 
@@ -128,7 +128,7 @@ impl FileExplorerPanel {
                         if let Some(status) = git_statuses.get(&entry.path) {
                             entry.git_status = status.clone();
                         }
-                        FlatEntry { entry, children: Vec::new() }
+                        FlatEntry { entry, _children: Vec::new() }
                     })
                     .collect();
                 for (i, child) in child_entries.into_iter().enumerate() {
@@ -158,7 +158,7 @@ impl FileExplorerPanel {
                     if let Some(status) = git_statuses.get(&entry.path) {
                         entry.git_status = status.clone();
                     }
-                    FlatEntry { entry, children: Vec::new() }
+                    FlatEntry { entry, _children: Vec::new() }
                 })
                 .collect();
             let insert_at = idx + 1;

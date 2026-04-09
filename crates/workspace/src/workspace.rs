@@ -94,8 +94,8 @@ impl Render for IdeWorkspace {
         let is_fullscreen = window.is_fullscreen();
         let is_dragging = self.dragging.is_some();
         let run_color = if self.is_running { theme::red() } else { theme::green() };
-        let run_label = if self.is_running { "◼ Stop" } else { "▶ Run" };
-        let push_label = if self.is_pushing { "Pushing..." } else { "↑ Push" };
+        let _run_label = if self.is_running { "◼ Stop" } else { "▶ Run" };
+        let _push_label = if self.is_pushing { "Pushing..." } else { "↑ Push" };
 
         div()
             .flex()

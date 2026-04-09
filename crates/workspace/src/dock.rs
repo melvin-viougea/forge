@@ -1,7 +1,4 @@
 use gpui::*;
-use gpui::prelude::*;
-
-use crate::theme;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum DockPosition {
@@ -44,8 +41,6 @@ impl Dock {
 
 impl Render for Dock {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let is_left = self.position == DockPosition::Left;
-
         div()
             .flex()
             .flex_col()

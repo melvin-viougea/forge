@@ -136,6 +136,7 @@ impl Render for CommitPanel {
 pub enum GitChangesEvent {
     FileOpened(PathBuf),
     FileOpenedDirect(PathBuf),
+    FilePreviewOpened(PathBuf),
 }
 
 impl gpui::EventEmitter<GitChangesEvent> for GitChangesPanel {}
@@ -288,7 +289,15 @@ impl Render for GitChangesPanel {
                                 cx.notify();
                             }),
                         )
-                        .child(
+                        .child({
+                            let has_preview = target_idx < self.changes.len() && {
+                                let name = &self.changes[target_idx].path.to_string_lossy().to_string();
+                                name.ends_with(".md")
+                                    || name.ends_with(".png") || name.ends_with(".jpg") || name.ends_with(".jpeg")
+                                    || name.ends_with(".gif") || name.ends_with(".bmp") || name.ends_with(".webp")
+                                    || name.ends_with(".svg") || name.ends_with(".ico")
+                            };
+
                             anchored().position(pos).child(
                                 div()
                                     .flex()
@@ -307,6 +316,33 @@ impl Render for GitChangesPanel {
                                             cx.stop_propagation();
                                         },
                                     )
+                                    // Open Preview (only for md/images)
+                                    .when(has_preview, |d| {
+                                        d.child(
+                                            div()
+                                                .id("ctx-open-preview")
+                                                .flex()
+                                                .items_center()
+                                                .w_full()
+                                                .h(px(26.))
+                                                .px(px(12.))
+                                                .cursor_pointer()
+                                                .text_color(colors::text())
+                                                .hover(|d| d.bg(colors::surface1()))
+                                                .child("Open Preview")
+                                                .on_click(cx.listener(
+                                                    move |this, _ev, _window, cx| {
+                                                        this.context_menu = None;
+                                                        let abs_path = this
+                                                            .root_path
+                                                            .join(&this.changes[target_idx].path);
+                                                        cx.emit(GitChangesEvent::FilePreviewOpened(abs_path));
+                                                        cx.notify();
+                                                    },
+                                                )),
+                                        )
+                                    })
+                                    // Open File
                                     .child(
                                         div()
                                             .id("ctx-open-file")
@@ -325,13 +361,12 @@ impl Render for GitChangesPanel {
                                                     let abs_path = this
                                                         .root_path
                                                         .join(&this.changes[target_idx].path);
-                                                    cx.emit(GitChangesEvent::FileOpenedDirect(
-                                                        abs_path,
-                                                    ));
+                                                    cx.emit(GitChangesEvent::FileOpenedDirect(abs_path));
                                                     cx.notify();
                                                 },
                                             )),
                                     )
+                                    // Discard Changes
                                     .child(
                                         div()
                                             .id("ctx-discard")
@@ -351,8 +386,8 @@ impl Render for GitChangesPanel {
                                                 },
                                             )),
                                     ),
-                            ),
-                        ),
+                            )
+                        }),
                 ))
             })
     }
@@ -397,7 +432,7 @@ fn render_change_entry(
     let deletions = change.deletions;
 
     // Format stats string with fixed width for alignment
-    let stats_str = format!("+{} -{}", insertions, deletions);
+    let _stats_str = format!("+{} -{}", insertions, deletions);
 
     // Budget for dir: panel is ~280px / ~7px per char ≈ 40 chars total
     // Subtract icon(2) + filename + space + stats(~10)
@@ -485,8 +520,8 @@ impl gpui::EventEmitter<GitLogEvent> for GitLogPanel {}
 pub struct GitLogPanel {
     root_path: PathBuf,
     commits: Vec<GitCommit>,
-    scroll_px: f32,
-    scroll_acc: f32,
+    _scroll_px: f32,
+    _scroll_acc: f32,
     pub visible_height: f32,
     _poll_task: Task<()>,
 }
@@ -522,8 +557,8 @@ impl GitLogPanel {
         Self {
             root_path,
             commits,
-            scroll_px: 0.0,
-            scroll_acc: 0.0,
+            _scroll_px: 0.0,
+            _scroll_acc: 0.0,
             visible_height: 200.0,
             _poll_task: poll_task,
         }

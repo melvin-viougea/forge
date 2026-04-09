@@ -1,5 +1,4 @@
 use gpui::*;
-use gpui::prelude::*;
 use std::time::Duration;
 
 use crate::terminal::{CellStyle, TermColor, Terminal, TerminalLine};
@@ -574,8 +573,7 @@ impl Render for TerminalView {
         let lines = self.terminal.get_visible_lines(200);
         let is_focused = self.focus_handle.is_focused(window);
         let (cursor_row, cursor_col) = self.terminal.cursor_position();
-        let line_count = lines.len();
-        let (scroll_offset, history_size, screen_lines) = self.terminal.scroll_info();
+        let (_scroll_offset, _history_size, _screen_lines) = self.terminal.scroll_info();
         let selection = self.selection.clone();
 
 

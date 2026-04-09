@@ -1,5 +1,4 @@
 use gpui::*;
-use gpui::prelude::*;
 use std::path::PathBuf;
 
 use crate::theme;
@@ -698,11 +697,12 @@ fn tokenize_generic(line: &str, keywords: &[&str], types: &[&str], comment_prefi
     let chars: Vec<char> = line.chars().collect();
     let len = chars.len();
     let mut i = 0;
+    let mut byte_offset = 0usize;
 
     while i < len {
         // Single-line comment
-        if !comment_prefix.is_empty() && line[i..].starts_with(comment_prefix) {
-            tokens.push(SyntaxToken { text: line[i..].to_string(), color: theme::overlay() });
+        if !comment_prefix.is_empty() && line[byte_offset..].starts_with(comment_prefix) {
+            tokens.push(SyntaxToken { text: line[byte_offset..].to_string(), color: theme::overlay() });
             return tokens;
         }
 
@@ -711,16 +711,19 @@ fn tokenize_generic(line: &str, keywords: &[&str], types: &[&str], comment_prefi
             let quote = chars[i];
             let mut s = String::new();
             s.push(chars[i]);
+            byte_offset += chars[i].len_utf8();
             i += 1;
             while i < len && chars[i] != quote {
                 if chars[i] == '\\' && i + 1 < len {
                     s.push(chars[i]);
+                    byte_offset += chars[i].len_utf8();
                     i += 1;
                 }
                 s.push(chars[i]);
+                byte_offset += chars[i].len_utf8();
                 i += 1;
             }
-            if i < len { s.push(chars[i]); i += 1; }
+            if i < len { s.push(chars[i]); byte_offset += chars[i].len_utf8(); i += 1; }
             tokens.push(SyntaxToken { text: s, color: theme::green() });
             continue;
         }
@@ -729,12 +732,14 @@ fn tokenize_generic(line: &str, keywords: &[&str], types: &[&str], comment_prefi
         if chars[i] == '`' {
             let mut s = String::new();
             s.push(chars[i]);
+            byte_offset += chars[i].len_utf8();
             i += 1;
             while i < len && chars[i] != '`' {
                 s.push(chars[i]);
+                byte_offset += chars[i].len_utf8();
                 i += 1;
             }
-            if i < len { s.push(chars[i]); i += 1; }
+            if i < len { s.push(chars[i]); byte_offset += chars[i].len_utf8(); i += 1; }
             tokens.push(SyntaxToken { text: s, color: theme::green() });
             continue;
         }
@@ -744,6 +749,7 @@ fn tokenize_generic(line: &str, keywords: &[&str], types: &[&str], comment_prefi
             let mut s = String::new();
             while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '.' || chars[i] == '_') {
                 s.push(chars[i]);
+                byte_offset += chars[i].len_utf8();
                 i += 1;
             }
             tokens.push(SyntaxToken { text: s, color: theme::peach() });
@@ -755,6 +761,7 @@ fn tokenize_generic(line: &str, keywords: &[&str], types: &[&str], comment_prefi
             let mut s = String::new();
             while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '_' || chars[i] == '!' || chars[i] == '?') {
                 s.push(chars[i]);
+                byte_offset += chars[i].len_utf8();
                 i += 1;
             }
             let color = if keywords.contains(&s.as_str()) {
@@ -775,6 +782,7 @@ fn tokenize_generic(line: &str, keywords: &[&str], types: &[&str], comment_prefi
         // Operators / punctuation
         let mut s = String::new();
         s.push(chars[i]);
+        byte_offset += chars[i].len_utf8();
         i += 1;
         tokens.push(SyntaxToken { text: s, color: theme::overlay() });
     }
@@ -842,11 +850,12 @@ fn highlight_html(line: &str) -> Vec<SyntaxToken> {
     let chars: Vec<char> = line.chars().collect();
     let len = chars.len();
     let mut i = 0;
+    let byte_pos = |idx: usize, chars: &[char]| -> usize { chars[..idx].iter().map(|c| c.len_utf8()).sum() };
 
     while i < len {
         // Comment
-        if line[i..].starts_with("<!--") {
-            tokens.push(SyntaxToken { text: line[i..].to_string(), color: theme::overlay() });
+        if line[byte_pos(i, &chars)..].starts_with("<!--") {
+            tokens.push(SyntaxToken { text: line[byte_pos(i, &chars)..].to_string(), color: theme::overlay() });
             return tokens;
         }
         // Tag
@@ -911,32 +920,36 @@ fn highlight_json(line: &str) -> Vec<SyntaxToken> {
     let chars: Vec<char> = line.chars().collect();
     let len = chars.len();
     let mut i = 0;
+    let mut byte_offset = 0usize;
 
     while i < len {
         if chars[i] == '"' {
             let mut s = String::new();
-            s.push(chars[i]); i += 1;
+            s.push(chars[i]); byte_offset += chars[i].len_utf8(); i += 1;
             while i < len && chars[i] != '"' {
-                if chars[i] == '\\' && i + 1 < len { s.push(chars[i]); i += 1; }
-                s.push(chars[i]); i += 1;
+                if chars[i] == '\\' && i + 1 < len { s.push(chars[i]); byte_offset += chars[i].len_utf8(); i += 1; }
+                s.push(chars[i]); byte_offset += chars[i].len_utf8(); i += 1;
             }
-            if i < len { s.push(chars[i]); i += 1; }
+            if i < len { s.push(chars[i]); byte_offset += chars[i].len_utf8(); i += 1; }
             // key vs value: key is followed by ':'
-            let rest = &line[i..].trim_start();
+            let rest = &line[byte_offset..].trim_start();
             let color = if rest.starts_with(':') { theme::blue() } else { theme::green() };
             tokens.push(SyntaxToken { text: s, color });
         } else if chars[i].is_ascii_digit() || chars[i] == '-' {
             let mut s = String::new();
             while i < len && (chars[i].is_ascii_digit() || chars[i] == '.' || chars[i] == '-' || chars[i] == 'e' || chars[i] == 'E') {
-                s.push(chars[i]); i += 1;
+                s.push(chars[i]); byte_offset += chars[i].len_utf8(); i += 1;
             }
             tokens.push(SyntaxToken { text: s, color: theme::peach() });
-        } else if line[i..].starts_with("true") || line[i..].starts_with("false") || line[i..].starts_with("null") {
-            let word = if line[i..].starts_with("true") { "true" } else if line[i..].starts_with("false") { "false" } else { "null" };
+        } else if line[byte_offset..].starts_with("true") || line[byte_offset..].starts_with("false") || line[byte_offset..].starts_with("null") {
+            let word = if line[byte_offset..].starts_with("true") { "true" } else if line[byte_offset..].starts_with("false") { "false" } else { "null" };
             tokens.push(SyntaxToken { text: word.to_string(), color: theme::lavender() });
-            i += word.len();
+            let word_chars = word.len(); // all ASCII, so byte len == char len
+            i += word_chars;
+            byte_offset += word.len();
         } else {
             tokens.push(SyntaxToken { text: chars[i].to_string(), color: theme::overlay() });
+            byte_offset += chars[i].len_utf8();
             i += 1;
         }
     }

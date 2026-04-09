@@ -75,11 +75,8 @@ pub fn build_file_tree(root: &Path, depth: usize, max_depth: usize) -> Vec<FileE
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
 
-            // Skip hidden dirs, build artifacts
-            if is_dir && (name.starts_with('.') || name == "target" || name == "node_modules") {
-                continue;
-            }
-            if !is_dir && name.starts_with('.') {
+            // Skip .git dir, build artifacts
+            if is_dir && (name == ".git" || name == "target" || name == "node_modules") {
                 continue;
             }
 

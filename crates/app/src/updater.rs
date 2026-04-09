@@ -48,7 +48,7 @@ pub fn get_download_size(url: &str) -> Option<u64> {
         .output()
         .ok()?;
     // Try content-length from headers
-    let headers = String::from_utf8_lossy(&output.stderr);
+    let _headers = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
     log::info!("Updater: HEAD response: {}", stdout.trim());
 
