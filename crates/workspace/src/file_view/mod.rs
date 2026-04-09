@@ -1835,19 +1835,54 @@ impl Render for FileView {
             })
             // Content
             .child({
-                let lines: Vec<AnyElement> = (0..self.buffer.line_count())
-                    .map(|row| {
-                        self.render_line(row, line_num_width, is_focused, cx)
-                            .into_any_element()
-                    })
-                    .collect();
-
-                let content_inner = div().flex().flex_col().p(px(4.)).children(lines);
+                let line_height = 20.0_f32;
+                let total_lines = self.buffer.line_count();
 
                 if compact {
-                    // No scroll — parent (DiffView) handles scrolling
+                    // No virtualization in compact/diff mode — parent handles scrolling
+                    let lines: Vec<AnyElement> = (0..total_lines)
+                        .map(|row| {
+                            self.render_line(row, line_num_width, is_focused, cx)
+                                .into_any_element()
+                        })
+                        .collect();
+                    let content_inner = div().flex().flex_col().p(px(4.)).children(lines);
                     div().w_full().child(content_inner).into_any_element()
                 } else {
+                    // Viewport virtualization: only render visible lines
+                    let scroll_offset_y: f32 = (-self.scroll_handle.offset().y).into();
+                    let viewport_h: f32 = self.scroll_handle.bounds().size.height.into();
+
+                    let (first, last) = if viewport_h > 0.0 {
+                        let buffer = 20_usize;
+                        let f = (scroll_offset_y / line_height).floor() as usize;
+                        let f = f.saturating_sub(buffer);
+                        let visible = (viewport_h / line_height).ceil() as usize + 1;
+                        let l = (f + visible + buffer * 2).min(total_lines);
+                        (f, l)
+                    } else {
+                        (0, total_lines.min(80))
+                    };
+
+                    let top_spacer = first as f32 * line_height;
+                    let bottom_spacer = total_lines.saturating_sub(last) as f32 * line_height;
+
+                    let lines: Vec<AnyElement> = (first..last)
+                        .map(|row| {
+                            self.render_line(row, line_num_width, is_focused, cx)
+                                .into_any_element()
+                        })
+                        .collect();
+
+                    let content_inner = div()
+                        .flex()
+                        .flex_col()
+                        .px(px(4.))
+                        .pt(px(4.))
+                        .child(div().h(px(top_spacer)).flex_shrink_0())
+                        .children(lines)
+                        .child(div().h(px(bottom_spacer + 4.0)).flex_shrink_0());
+
                     div()
                         .id("file-content-scroll")
                         .flex_1()
@@ -1862,11 +1897,12 @@ impl Render for FileView {
                                     (x, y)
                                 }
                             };
-                            // Rail: only apply horizontal if clearly horizontal (ratio 3:1)
                             if dx.abs() > dy.abs() * 3.0 {
+                                // Horizontal scroll
                                 this.scroll_x = (this.scroll_x - dx).max(0.0);
-                                cx.notify();
                             }
+                            // Always re-render to update visible line range
+                            cx.notify();
                         }))
                         .child(content_inner)
                         .into_any_element()
