@@ -1,5 +1,5 @@
-use gpui::*;
 use gpui::prelude::*;
+use gpui::*;
 use std::path::PathBuf;
 
 use crate::status::{get_changes, get_commits, ChangeStatus, GitCommit, GitFileChange};
@@ -66,7 +66,11 @@ impl CommitPanel {
 
 impl Render for CommitPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let run_color = if self.is_running { colors::red() } else { colors::green() };
+        let run_color = if self.is_running {
+            colors::red()
+        } else {
+            colors::green()
+        };
         let run_icon = if self.is_running { "◼" } else { "▶" };
         let push_icon = if self.is_pushing { "⏳" } else { "\u{e726}" };
 
@@ -131,6 +135,7 @@ impl Render for CommitPanel {
 
 pub enum GitChangesEvent {
     FileOpened(PathBuf),
+    FileOpenedDirect(PathBuf),
 }
 
 impl gpui::EventEmitter<GitChangesEvent> for GitChangesPanel {}
@@ -139,7 +144,6 @@ impl gpui::EventEmitter<GitChangesEvent> for GitChangesPanel {}
 pub struct GitChangesPanel {
     root_path: PathBuf,
     changes: Vec<GitFileChange>,
-    selected_index: Option<usize>,
     context_menu: Option<ContextMenuState>,
     _poll_task: Task<()>,
 }
@@ -155,7 +159,9 @@ impl GitChangesPanel {
 
         let poll_task = cx.spawn(async |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             loop {
-                cx.background_executor().timer(std::time::Duration::from_secs(2)).await;
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(2))
+                    .await;
                 let result = this.update(cx, |view, cx| {
                     let new_changes = get_changes(&view.root_path);
                     if new_changes.len() != view.changes.len() {
@@ -163,8 +169,11 @@ impl GitChangesPanel {
                         cx.notify();
                     } else {
                         // Check if any paths changed
-                        let changed = view.changes.iter().zip(new_changes.iter())
-                            .any(|(a, b)| a.path != b.path || a.insertions != b.insertions || a.deletions != b.deletions);
+                        let changed = view.changes.iter().zip(new_changes.iter()).any(|(a, b)| {
+                            a.path != b.path
+                                || a.insertions != b.insertions
+                                || a.deletions != b.deletions
+                        });
                         if changed {
                             view.changes = new_changes;
                             cx.notify();
@@ -180,7 +189,6 @@ impl GitChangesPanel {
         Self {
             root_path,
             changes,
-            selected_index: None,
             context_menu: None,
             _poll_task: poll_task,
         }
@@ -236,15 +244,16 @@ impl GitChangesPanel {
 
 impl Render for GitChangesPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let selected_index = self.selected_index;
-        let context_menu = self.context_menu.as_ref().map(|m| (m.position, m.target_idx));
+        let context_menu = self
+            .context_menu
+            .as_ref()
+            .map(|m| (m.position, m.target_idx));
 
-        let all_entries: Vec<_> = self.changes
+        let all_entries: Vec<_> = self
+            .changes
             .iter()
             .enumerate()
-            .map(|(idx, change)| {
-                render_change_entry(idx, change, selected_index, cx)
-            })
+            .map(|(idx, change)| render_change_entry(idx, change, cx))
             .collect();
 
         div()
@@ -258,61 +267,93 @@ impl Render for GitChangesPanel {
             .children(all_entries)
             // Context menu with backdrop
             .when_some(context_menu, |d: Stateful<Div>, (pos, target_idx)| {
-                d.child(
-                    deferred(
-                        div()
-                            .id("ctx-backdrop")
-                            .absolute()
-                            .top_0()
-                            .left_0()
-                            .size_full()
-                            .on_mouse_down(MouseButton::Left, cx.listener(|this, _ev: &MouseDownEvent, _window, cx| {
+                d.child(deferred(
+                    div()
+                        .id("ctx-backdrop")
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _ev: &MouseDownEvent, _window, cx| {
                                 this.context_menu = None;
                                 cx.notify();
-                            }))
-                            .on_mouse_down(MouseButton::Right, cx.listener(|this, _ev: &MouseDownEvent, _window, cx| {
+                            }),
+                        )
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(|this, _ev: &MouseDownEvent, _window, cx| {
                                 this.context_menu = None;
                                 cx.notify();
-                            }))
-                            .child(
-                                anchored()
-                                    .position(pos)
+                            }),
+                        )
+                        .child(
+                            anchored().position(pos).child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .w(px(160.))
+                                    .bg(colors::surface0())
+                                    .border_1()
+                                    .border_color(colors::surface1())
+                                    .rounded(px(6.))
+                                    .py(px(4.))
+                                    .text_sm()
+                                    .shadow_lg()
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        |_ev: &MouseDownEvent, _window, cx| {
+                                            cx.stop_propagation();
+                                        },
+                                    )
                                     .child(
                                         div()
+                                            .id("ctx-open-file")
                                             .flex()
-                                            .flex_col()
-                                            .w(px(160.))
-                                            .bg(colors::surface0())
-                                            .border_1()
-                                            .border_color(colors::surface1())
-                                            .rounded(px(6.))
-                                            .py(px(4.))
-                                            .text_sm()
-                                            .shadow_lg()
-                                            .on_mouse_down(MouseButton::Left, |_ev: &MouseDownEvent, _window, cx| {
-                                                cx.stop_propagation();
-                                            })
-                                            .child(
-                                                div()
-                                                    .id("ctx-discard")
-                                                    .flex()
-                                                    .items_center()
-                                                    .w_full()
-                                                    .h(px(26.))
-                                                    .px(px(12.))
-                                                    .cursor_pointer()
-                                                    .text_color(colors::red())
-                                                    .hover(|d| d.bg(colors::surface1()))
-                                                    .child("Discard Changes")
-                                                    .on_click(cx.listener(move |this, _ev, _window, cx| {
-                                                        this.discard_change(target_idx);
-                                                        cx.notify();
-                                                    })),
-                                            ),
+                                            .items_center()
+                                            .w_full()
+                                            .h(px(26.))
+                                            .px(px(12.))
+                                            .cursor_pointer()
+                                            .text_color(colors::text())
+                                            .hover(|d| d.bg(colors::surface1()))
+                                            .child("Open File")
+                                            .on_click(cx.listener(
+                                                move |this, _ev, _window, cx| {
+                                                    this.context_menu = None;
+                                                    let abs_path = this
+                                                        .root_path
+                                                        .join(&this.changes[target_idx].path);
+                                                    cx.emit(GitChangesEvent::FileOpenedDirect(
+                                                        abs_path,
+                                                    ));
+                                                    cx.notify();
+                                                },
+                                            )),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("ctx-discard")
+                                            .flex()
+                                            .items_center()
+                                            .w_full()
+                                            .h(px(26.))
+                                            .px(px(12.))
+                                            .cursor_pointer()
+                                            .text_color(colors::red())
+                                            .hover(|d| d.bg(colors::surface1()))
+                                            .child("Discard Changes")
+                                            .on_click(cx.listener(
+                                                move |this, _ev, _window, cx| {
+                                                    this.discard_change(target_idx);
+                                                    cx.notify();
+                                                },
+                                            )),
                                     ),
                             ),
-                    ),
-                )
+                        ),
+                ))
             })
     }
 }
@@ -335,10 +376,8 @@ fn shorten_path_left(path: &str, max_chars: usize) -> String {
 fn render_change_entry(
     idx: usize,
     change: &GitFileChange,
-    selected: Option<usize>,
     cx: &mut Context<GitChangesPanel>,
 ) -> Stateful<Div> {
-    let is_selected = selected == Some(idx);
     let color = GitChangesPanel::status_color(&change.status);
     let label = change.status.label();
 
@@ -374,15 +413,9 @@ fn render_change_entry(
         .h(px(22.))
         .px(px(8.))
         .cursor_pointer()
-        .when(is_selected, |d: Stateful<Div>| d.bg(colors::surface0()))
         .hover(|d| d.bg(colors::surface0()))
         // Status icon
-        .child(
-            div()
-                .w(px(18.))
-                .text_color(color)
-                .child(label),
-        )
+        .child(div().w(px(18.)).text_color(color).child(label))
         // Filename (never truncated)
         .child(
             div()
@@ -423,19 +456,22 @@ fn render_change_entry(
         )
         .on_click(cx.listener(move |this, _ev, _window, cx| {
             this.context_menu = None;
-            this.selected_index = Some(idx);
+
             let abs_path = this.root_path.join(&this.changes[idx].path);
             cx.emit(GitChangesEvent::FileOpened(abs_path));
             cx.notify();
         }))
-        .on_mouse_down(MouseButton::Right, cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
-            this.selected_index = Some(idx);
-            this.context_menu = Some(ContextMenuState {
-                position: ev.position,
-                target_idx: idx,
-            });
-            cx.notify();
-        }))
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |this, ev: &MouseDownEvent, _window, cx| {
+    
+                this.context_menu = Some(ContextMenuState {
+                    position: ev.position,
+                    target_idx: idx,
+                });
+                cx.notify();
+            }),
+        )
 }
 
 // ── Git Log Panel ───────────────────────────────────────────
@@ -461,7 +497,9 @@ impl GitLogPanel {
 
         let poll_task = cx.spawn(async |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             loop {
-                cx.background_executor().timer(std::time::Duration::from_secs(5)).await;
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(5))
+                    .await;
                 let result = this.update(cx, |view, cx| {
                     let new_commits = get_commits(&view.root_path, 50);
                     // Only update if the top commit changed
@@ -481,13 +519,24 @@ impl GitLogPanel {
             }
         });
 
-        Self { root_path, commits, scroll_px: 0.0, scroll_acc: 0.0, visible_height: 200.0, _poll_task: poll_task }
+        Self {
+            root_path,
+            commits,
+            scroll_px: 0.0,
+            scroll_acc: 0.0,
+            visible_height: 200.0,
+            _poll_task: poll_task,
+        }
     }
 }
 
 impl Render for GitLogPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let commits: Vec<_> = self.commits.iter().map(|c| (c.hash.clone(), c.message.clone(), c.time_ago.clone())).collect();
+        let commits: Vec<_> = self
+            .commits
+            .iter()
+            .map(|c| (c.hash.clone(), c.message.clone(), c.time_ago.clone()))
+            .collect();
         div()
             .flex()
             .flex_col()
@@ -497,17 +546,21 @@ impl Render for GitLogPanel {
             .text_xs()
             .font_family("Berkeley Mono, SF Mono, Menlo, monospace")
             .children(
-                commits.into_iter().enumerate().map(|(idx, (hash, message, time_ago))| {
-                    let h = hash.clone();
-                    let m = message.clone();
-                    render_commit_entry(idx, &hash, &message, &time_ago)
-                        .on_click(cx.listener(move |_this, _ev, _window, cx| {
-                            cx.emit(GitLogEvent::CommitClicked {
-                                hash: h.clone(),
-                                message: m.clone(),
-                            });
-                        }))
-                }),
+                commits
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, (hash, message, time_ago))| {
+                        let h = hash.clone();
+                        let m = message.clone();
+                        render_commit_entry(idx, &hash, &message, &time_ago).on_click(cx.listener(
+                            move |_this, _ev, _window, cx| {
+                                cx.emit(GitLogEvent::CommitClicked {
+                                    hash: h.clone(),
+                                    message: m.clone(),
+                                });
+                            },
+                        ))
+                    }),
             )
     }
 }

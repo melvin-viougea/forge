@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use ide_file_explorer::{FileExplorerPanel, FileExplorerEvent};
-use ide_git_panel::{CommitPanel, CommitDiffView, DiffView, ChangesReviewView, ChangesReviewEvent, GitChangesPanel, GitChangesEvent, GitLogPanel, GitLogEvent, RunnerEvent};
+use ide_git_panel::{CommitPanel, CommitDiffView, DiffView, ChangesReviewView, ChangesReviewEvent, GitChangesPanel, GitChangesEvent, GitLogPanel, GitLogEvent, RunnerEvent, compute_git_gutter};
 use ide_workspace::theme::{self, ThemeName};
 use ide_workspace::{FileView, FileViewEvent, ImagePreviewView, MarkdownPreviewView};
 use ide_terminal::{LayoutDimensions, TerminalView, TerminalViewEvent};
@@ -1061,7 +1061,17 @@ impl AppView {
         let icon = "crates/app/assets/file.svg";
 
         let detail = path.to_string_lossy().to_string();
-        let file_view = cx.new(|cx| FileView::new(path, cx));
+        let root_path = self.active_project.map(|idx| self.project_states[idx].path.clone());
+        let file_view = cx.new(|cx| FileView::new(path.clone(), cx));
+        // Compute git gutter markers
+        if let Some(root) = root_path {
+            let gutter = compute_git_gutter(&root, &path);
+            if !gutter.is_empty() {
+                file_view.update(cx, |fv, _| {
+                    fv.git_gutter = gutter;
+                });
+            }
+        }
         let tab_id = pane.update(cx, |p, _cx| {
             p.add_tab(filename, icon, detail, AnyView::from(file_view.clone()), true)
         });
@@ -1432,10 +1442,14 @@ impl AppView {
         let git_changes_entity = right_panel.read(cx).git_changes.clone();
         let pane_for_gc = pane.clone();
         let root_for_gc = path.clone();
+        let pane_for_gc2 = pane.clone();
         let git_changes_sub = cx.subscribe(&git_changes_entity, move |this: &mut AppView, _gc, event: &GitChangesEvent, cx| {
             match event {
                 GitChangesEvent::FileOpened(file_path) => {
                     this.open_diff_in_pane(&pane_for_gc, &root_for_gc, file_path.clone(), cx);
+                }
+                GitChangesEvent::FileOpenedDirect(file_path) => {
+                    this.open_file_in_pane(&pane_for_gc2, file_path.clone(), cx);
                 }
             }
         });
