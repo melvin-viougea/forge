@@ -19,6 +19,8 @@ pub struct FileExplorerPanel {
     pub on_file_open: Option<Box<dyn Fn(&PathBuf) + Send + Sync>>,
     context_menu: Option<ContextMenuState>,
     _poll_task: Task<()>,
+    drop_target_idx: Option<usize>,
+    focus_handle: FocusHandle,
 }
 
 struct ContextMenuState {
@@ -36,6 +38,7 @@ use ide_workspace::theme as colors;
 
 impl FileExplorerPanel {
     pub fn new(root_path: PathBuf, cx: &mut Context<Self>) -> Self {
+        let focus_handle = cx.focus_handle();
         let tree = build_file_tree(&root_path, 0, 0);
         let git_statuses = get_git_statuses(&root_path);
         let entries = tree
@@ -86,10 +89,19 @@ impl FileExplorerPanel {
             on_file_open: None,
             context_menu: None,
             _poll_task: poll_task,
+            drop_target_idx: None,
+            focus_handle,
         }
     }
 
     pub fn refresh(&mut self) {
+        // Save expanded directories
+        let expanded: std::collections::HashSet<PathBuf> = self.entries
+            .iter()
+            .filter(|f| f.entry.is_dir && f.entry.expanded)
+            .map(|f| f.entry.path.clone())
+            .collect();
+
         let tree = build_file_tree(&self.root_path, 0, 0);
         let git_statuses = get_git_statuses(&self.root_path);
         self.entries = tree
@@ -101,6 +113,30 @@ impl FileExplorerPanel {
                 FlatEntry { entry, children: Vec::new() }
             })
             .collect();
+
+        // Re-expand previously expanded directories
+        let mut idx = 0;
+        while idx < self.entries.len() {
+            if self.entries[idx].entry.is_dir && expanded.contains(&self.entries[idx].entry.path) {
+                self.entries[idx].entry.expanded = true;
+                let path = self.entries[idx].entry.path.clone();
+                let depth = self.entries[idx].entry.depth + 1;
+                let children = build_file_tree(&path, depth, depth);
+                let child_entries: Vec<FlatEntry> = children
+                    .into_iter()
+                    .map(|mut entry| {
+                        if let Some(status) = git_statuses.get(&entry.path) {
+                            entry.git_status = status.clone();
+                        }
+                        FlatEntry { entry, children: Vec::new() }
+                    })
+                    .collect();
+                for (i, child) in child_entries.into_iter().enumerate() {
+                    self.entries.insert(idx + 1 + i, child);
+                }
+            }
+            idx += 1;
+        }
     }
 
     fn toggle_expand(&mut self, idx: usize) {
@@ -200,21 +236,44 @@ impl FileExplorerPanel {
                     .output();
             }
             "paste" => {
-                let output = std::process::Command::new("pbpaste").output();
-                if let Ok(out) = output {
-                    let src = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                    let src_path = PathBuf::from(&src);
-                    if src_path.exists() {
-                        let dest_name = src_path.file_name().unwrap_or_default();
-                        let dest = parent.join(dest_name);
-                        if src_path.is_dir() {
-                            let _ = std::process::Command::new("cp")
-                                .args(["-r", &src, &dest.display().to_string()])
-                                .output();
-                        } else {
-                            let _ = std::fs::copy(&src_path, &dest);
+                let abs_parent = self.root_path.join(&parent);
+                // Try reading file URLs from pasteboard (Finder copy)
+                let file_paths = Self::get_clipboard_file_paths();
+                if !file_paths.is_empty() {
+                    for src_path in &file_paths {
+                        if let Some(file_name) = src_path.file_name() {
+                            let dest = abs_parent.join(file_name);
+                            if dest == *src_path { continue; }
+                            if src_path.is_dir() {
+                                let _ = std::process::Command::new("cp")
+                                    .args(["-r", &src_path.display().to_string(), &dest.display().to_string()])
+                                    .output();
+                            } else {
+                                let _ = std::fs::copy(src_path, &dest);
+                            }
                         }
-                        self.refresh();
+                    }
+                    self.refresh();
+                } else {
+                    // Fallback: try text path from pbpaste
+                    if let Ok(out) = std::process::Command::new("pbpaste").output() {
+                        let src = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                        let src_path = PathBuf::from(&src);
+                        if src_path.exists() {
+                            if let Some(dest_name) = src_path.file_name() {
+                                let dest = abs_parent.join(dest_name);
+                                if dest != src_path {
+                                    if src_path.is_dir() {
+                                        let _ = std::process::Command::new("cp")
+                                            .args(["-r", &src, &dest.display().to_string()])
+                                            .output();
+                                    } else {
+                                        let _ = std::fs::copy(&src_path, &dest);
+                                    }
+                                    self.refresh();
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -248,6 +307,134 @@ impl FileExplorerPanel {
         }
         self.context_menu = None;
     }
+
+    /// Read file paths from macOS pasteboard (Finder Cmd+C) or save clipboard image data.
+    /// Returns a list of file paths ready to be copied to the destination.
+    fn get_clipboard_file_paths() -> Vec<PathBuf> {
+        // Use JXA to inspect pasteboard and extract file URLs or save image data
+        let script = r#"
+ObjC.import("AppKit");
+ObjC.import("Foundation");
+var pb = $.NSPasteboard.generalPasteboard;
+var items = pb.pasteboardItems;
+var result = [];
+
+for (var i = 0; i < items.count; i++) {
+    var item = items.objectAtIndex(i);
+    // Try file URL first (Finder copy)
+    var urlStr = item.stringForType("public.file-url");
+    if (urlStr) {
+        var url = $.NSURL.URLWithString(urlStr);
+        if (url && url.isFileURL) {
+            result.push(url.path.js);
+            continue;
+        }
+    }
+    // Try image data — save to temp file
+    var imageTypes = ["public.png", "public.tiff", "public.jpeg"];
+    var exts = ["png", "tiff", "jpg"];
+    for (var j = 0; j < imageTypes.length; j++) {
+        var data = item.dataForType(imageTypes[j]);
+        if (data && data.length > 0) {
+            var tmpPath = "/tmp/forge-paste-" + Date.now() + "." + exts[j];
+            var nsPath = $.NSString.stringWithString(tmpPath);
+            data.writeToFileAtomically(nsPath, true);
+            result.push(tmpPath);
+            break;
+        }
+    }
+}
+result.join("\n");
+"#;
+        let output = std::process::Command::new("osascript")
+            .args(["-l", "JavaScript", "-e", script])
+            .output();
+        match output {
+            Ok(out) => {
+                let text = String::from_utf8_lossy(&out.stdout);
+                text.trim()
+                    .lines()
+                    .filter(|l| !l.is_empty())
+                    .map(|l| PathBuf::from(l.trim()))
+                    .filter(|p| p.exists())
+                    .collect()
+            }
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// Paste clipboard files to project root
+    fn paste_to_root(&mut self) {
+        let dest_dir = self.root_path.clone();
+        let file_paths = Self::get_clipboard_file_paths();
+        if !file_paths.is_empty() {
+            for src_path in &file_paths {
+                if let Some(file_name) = src_path.file_name() {
+                    let dest = dest_dir.join(file_name);
+                    if dest == *src_path { continue; }
+                    if src_path.is_dir() {
+                        let _ = std::process::Command::new("cp")
+                            .args(["-r", &src_path.display().to_string(), &dest.display().to_string()])
+                            .output();
+                    } else {
+                        let _ = std::fs::copy(src_path, &dest);
+                    }
+                }
+            }
+            self.refresh();
+        } else if let Ok(out) = std::process::Command::new("pbpaste").output() {
+            let src = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            let src_path = PathBuf::from(&src);
+            if src_path.exists() {
+                if let Some(dest_name) = src_path.file_name() {
+                    let dest = dest_dir.join(dest_name);
+                    if dest != src_path {
+                        if src_path.is_dir() {
+                            let _ = std::process::Command::new("cp")
+                                .args(["-r", &src, &dest.display().to_string()])
+                                .output();
+                        } else {
+                            let _ = std::fs::copy(&src_path, &dest);
+                        }
+                        self.refresh();
+                    }
+                }
+            }
+        }
+    }
+
+    /// Get the target directory for a drop at the given entry index
+    fn drop_target_dir(&self, idx: usize) -> PathBuf {
+        let entry = &self.entries[idx].entry;
+        if entry.is_dir {
+            self.root_path.join(&entry.path)
+        } else {
+            let parent = entry.path.parent().unwrap_or(&self.root_path);
+            self.root_path.join(parent)
+        }
+    }
+
+    /// Handle external file drop at the given entry index
+    fn handle_file_drop(&mut self, idx: usize, paths: &ExternalPaths) {
+        let dest_dir = self.drop_target_dir(idx);
+        for src in paths.paths() {
+            if let Some(file_name) = src.file_name() {
+                let dest = dest_dir.join(file_name);
+                if dest == *src { continue; }
+                // Move (rename) if on same volume, otherwise copy
+                if std::fs::rename(src, &dest).is_err() {
+                    if src.is_dir() {
+                        let _ = std::process::Command::new("cp")
+                            .args(["-r", &src.display().to_string(), &dest.display().to_string()])
+                            .output();
+                    } else {
+                        let _ = std::fs::copy(src, &dest);
+                    }
+                }
+            }
+        }
+        self.refresh();
+    }
 }
 
 fn render_menu_item(
@@ -276,6 +463,12 @@ fn render_menu_item(
         }))
 }
 
+impl Focusable for FileExplorerPanel {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
 impl Render for FileExplorerPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let context_menu = self.context_menu.as_ref().map(|m| (m.position, m.target_idx));
@@ -288,6 +481,68 @@ impl Render for FileExplorerPanel {
             .overflow_y_scroll()
             .text_sm()
             .font_family("Berkeley Mono, SF Mono, Menlo, monospace")
+            .track_focus(&self.focus_handle)
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, _ev: &MouseDownEvent, window, cx| {
+                this.focus_handle.focus(window);
+                this.selected_index = None;
+                this.context_menu = None;
+                cx.notify();
+            }))
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _window, cx| {
+                if ev.keystroke.modifiers.platform {
+                    match ev.keystroke.key.as_str() {
+                        // Cmd+Backspace → move to trash
+                        "backspace" => {
+                            if let Some(idx) = this.selected_index {
+                                if idx < this.entries.len() {
+                                    this.execute_action("trash", idx, cx);
+                                    this.selected_index = None;
+                                    this.refresh();
+                                    cx.notify();
+                                }
+                            }
+                        }
+                        // Cmd+V → paste
+                        "v" => {
+                            if let Some(idx) = this.selected_index {
+                                if idx < this.entries.len() {
+                                    this.execute_action("paste", idx, cx);
+                                    cx.notify();
+                                }
+                            } else {
+                                // No selection → paste at root
+                                this.paste_to_root();
+                                cx.notify();
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }))
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, _window, cx| {
+                // Drop on empty area → project root
+                let root = this.root_path.clone();
+                for src in paths.paths() {
+                    if let Some(file_name) = src.file_name() {
+                        let dest = root.join(file_name);
+                        if dest == *src { continue; }
+                        if std::fs::rename(src, &dest).is_err() {
+                            if src.is_dir() {
+                                let _ = std::process::Command::new("cp")
+                                    .args(["-r", &src.display().to_string(), &dest.display().to_string()])
+                                    .output();
+                            } else {
+                                let _ = std::fs::copy(src, &dest);
+                            }
+                        }
+                    }
+                }
+                this.refresh();
+                cx.notify();
+            }))
+            .drag_over::<ExternalPaths>(|d, _, _, _| {
+                d.bg(colors::surface0())
+            })
             // File list
             .children(
                 self.entries
@@ -297,6 +552,7 @@ impl Render for FileExplorerPanel {
                         let entry = &flat.entry;
                         let indent = entry.depth as f32 * 16.0;
                         let is_selected = self.selected_index == Some(idx);
+                        let is_drop_target = self.drop_target_idx == Some(idx);
                         let status_color = Self::status_color(&entry.git_status);
                         let status_text = Self::status_indicator(&entry.git_status);
                         let icon_svg = entry.icon_svg();
@@ -314,7 +570,16 @@ impl Render for FileExplorerPanel {
                             .pr(px(8.))
                             .cursor_pointer()
                             .when(is_selected, |d: Stateful<Div>| d.bg(colors::surface0()))
+                            .when(is_drop_target, |d| d.bg(colors::surface1()).border_t_1().border_color(colors::blue()))
                             .hover(|d| d.bg(colors::surface0()))
+                            .on_drop(cx.listener(move |this, paths: &ExternalPaths, _window, cx| {
+                                this.handle_file_drop(idx, paths);
+                                this.drop_target_idx = None;
+                                cx.notify();
+                            }))
+                            .drag_over::<ExternalPaths>(move |d, _, _, _| {
+                                d.bg(colors::surface1()).border_t_1().border_color(colors::blue())
+                            })
                             .child(
                                 svg()
                                     .path(icon_svg)
@@ -333,7 +598,8 @@ impl Render for FileExplorerPanel {
                                     .text_color(status_color)
                                     .child(status_text),
                             )
-                            .on_click(cx.listener(move |this, _ev, _window, cx| {
+                            .on_click(cx.listener(move |this, _ev, window, cx| {
+                                this.focus_handle.focus(window);
                                 this.context_menu = None;
                                 this.selected_index = Some(idx);
                                 if this.entries[idx].entry.is_dir {

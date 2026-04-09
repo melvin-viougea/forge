@@ -508,8 +508,9 @@ impl Render for RightPanel {
                                     .hover(|d| d.text_color(colors::text()))
                             })
                             .child("Files")
-                            .on_click(cx.listener(|this, _ev, _window, cx| {
+                            .on_click(cx.listener(|this, _ev, window, cx| {
                                 this.active_tab = RightTab::Files;
+                                this.file_explorer.focus_handle(cx).focus(window);
                                 cx.notify();
                             })),
                     ),
