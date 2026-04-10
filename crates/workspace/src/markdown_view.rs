@@ -1,6 +1,9 @@
 use gpui::*;
+use std::cell::Cell;
 use std::ops::Range;
 use std::path::PathBuf;
+use std::rc::Rc;
+use std::time::Duration;
 
 use crate::theme;
 
@@ -613,6 +616,58 @@ fn build_styled_text(spans: &[InlineSpan]) -> (String, Vec<(Range<usize>, Highli
     (full_text, highlights, links)
 }
 
+/// Merge potentially overlapping/unsorted highlights into sorted, non-overlapping ranges.
+/// GPUI's `compute_runs` requires highlights to be sorted by start position and non-overlapping.
+/// When selection highlights overlap with text styling (bold, links, etc.), we must merge them.
+fn merge_highlights(text: &str, highlights: Vec<(Range<usize>, HighlightStyle)>) -> Vec<(Range<usize>, HighlightStyle)> {
+    if highlights.len() <= 1 {
+        return highlights;
+    }
+
+    // Collect all boundary positions (sorted, deduped, valid char boundaries only)
+    let mut positions: Vec<usize> = Vec::new();
+    for (range, _) in &highlights {
+        let s = range.start.min(text.len());
+        let e = range.end.min(text.len());
+        if s < e && text.is_char_boundary(s) && text.is_char_boundary(e) {
+            positions.push(s);
+            positions.push(e);
+        }
+    }
+    positions.sort();
+    positions.dedup();
+
+    if positions.len() < 2 {
+        return highlights;
+    }
+
+    // For each segment between adjacent positions, merge all overlapping highlight styles
+    let mut result = Vec::new();
+    for i in 0..positions.len() - 1 {
+        let seg_start = positions[i];
+        let seg_end = positions[i + 1];
+        if seg_start >= seg_end { continue; }
+
+        let mut merged: Option<HighlightStyle> = None;
+        for (range, style) in &highlights {
+            let r_start = range.start.min(text.len());
+            let r_end = range.end.min(text.len());
+            if r_start <= seg_start && r_end >= seg_end {
+                merged = Some(match merged {
+                    Some(existing) => existing.highlight(*style),
+                    None => *style,
+                });
+            }
+        }
+
+        if let Some(style) = merged {
+            result.push((seg_start..seg_end, style));
+        }
+    }
+
+    result
+}
+
 // ── Syntax highlighting (regex-based) ────────────────────
 
 struct SyntaxToken {
@@ -1070,10 +1125,21 @@ pub struct MarkdownPreviewView {
     /// Width of each table (total content width), keyed by block index
     table_widths: std::collections::HashMap<usize, f32>,
     scroll_handle: ScrollHandle,
+    focus_handle: FocusHandle,
+    // Text selection
+    selecting: bool,
+    sel_anchor: Option<(usize, usize, usize)>, // (block_idx, sub_idx, char_byte_offset)
+    sel_cursor: Option<(usize, usize, usize)>,
+    hover_block: Rc<Cell<Option<usize>>>,
+    hover_sub: Rc<Cell<Option<usize>>>,
+    hover_char: Rc<Cell<Option<usize>>>,
+    // Auto-scroll during selection drag
+    auto_scroll_speed: f32,
+    auto_scroll_task: Option<Task<()>>,
 }
 
 impl MarkdownPreviewView {
-    pub fn new(path: PathBuf) -> Self {
+    pub fn new(path: PathBuf, cx: &mut Context<Self>) -> Self {
         let content = std::fs::read_to_string(&path).unwrap_or_default();
         let blocks = parse_markdown(&content);
         let container_w = 800.0 - 64.0; // max_w minus padding
@@ -1087,11 +1153,192 @@ impl MarkdownPreviewView {
             table_scroll_x: std::collections::HashMap::new(),
             table_widths: std::collections::HashMap::new(),
             scroll_handle: ScrollHandle::new(),
+            focus_handle: cx.focus_handle(),
+            selecting: false,
+            sel_anchor: None,
+            sel_cursor: None,
+            hover_block: Rc::new(Cell::new(None)),
+            hover_sub: Rc::new(Cell::new(None)),
+            hover_char: Rc::new(Cell::new(None)),
+            auto_scroll_speed: 0.0,
+            auto_scroll_task: None,
         }
     }
 
     pub fn path(&self) -> &PathBuf {
         &self.path
+    }
+
+    /// Normalize selection so start <= end in document order
+    fn normalize_sel(&self) -> Option<((usize, usize, usize), (usize, usize, usize))> {
+        let a = self.sel_anchor?;
+        let c = self.sel_cursor?;
+        if a <= c { Some((a, c)) } else { Some((c, a)) }
+    }
+
+    /// Get the selection byte range for a specific text element, if selected
+    fn sel_range_for(&self, block_idx: usize, sub_idx: usize, text_len: usize) -> Option<Range<usize>> {
+        let (start, end) = self.normalize_sel()?;
+        let me = (block_idx, sub_idx);
+        let s = (start.0, start.1);
+        let e = (end.0, end.1);
+        if me < s || me > e { return None; }
+        let from = if me == s { start.2.min(text_len) } else { 0 };
+        let to = if me == e { end.2.min(text_len) } else { text_len };
+        if from >= to { return None; }
+        Some(from..to)
+    }
+
+    /// Extract the text for a given block/sub element
+    fn block_sub_text(&self, block_idx: usize, sub_idx: usize) -> Option<String> {
+        let block = self.blocks.get(block_idx)?;
+        match block {
+            MdBlock::Heading(_, inlines) | MdBlock::Paragraph(inlines) => {
+                if sub_idx != 0 { return None; }
+                let spans = flatten_inlines(inlines, false, false, false);
+                let (text, _, _) = build_styled_text(&spans);
+                Some(text)
+            }
+            MdBlock::CodeBlock(_, code) => {
+                if sub_idx != 0 { return None; }
+                Some(code.clone())
+            }
+            MdBlock::UnorderedList(items) | MdBlock::OrderedList(items) => {
+                let item = items.get(sub_idx)?;
+                let spans = flatten_inlines(&item.content, false, false, false);
+                let (text, _, _) = build_styled_text(&spans);
+                Some(text)
+            }
+            MdBlock::Blockquote(inner) => {
+                if let Some(inner_block) = inner.get(sub_idx) {
+                    match inner_block {
+                        MdBlock::Paragraph(inlines) | MdBlock::Heading(_, inlines) => {
+                            let spans = flatten_inlines(inlines, false, false, false);
+                            let (text, _, _) = build_styled_text(&spans);
+                            Some(text)
+                        }
+                        MdBlock::CodeBlock(_, code) => Some(code.clone()),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            }
+            MdBlock::Table(rows) => {
+                // Flatten cells: sub_idx = row * col_count + col
+                let col_count = rows.iter().map(|r| r.len()).max().unwrap_or(1);
+                let row = sub_idx / col_count;
+                let col = sub_idx % col_count;
+                let cell = rows.get(row)?.get(col)?;
+                let spans = flatten_inlines(cell, false, false, false);
+                let (text, _, _) = build_styled_text(&spans);
+                Some(text)
+            }
+            MdBlock::HorizontalRule => None,
+        }
+    }
+
+    /// Enumerate all (block_idx, sub_idx) in a block
+    fn block_sub_count(&self, block_idx: usize) -> usize {
+        match self.blocks.get(block_idx) {
+            Some(MdBlock::Heading(..)) | Some(MdBlock::Paragraph(..)) | Some(MdBlock::CodeBlock(..)) => 1,
+            Some(MdBlock::UnorderedList(items)) | Some(MdBlock::OrderedList(items)) => items.len(),
+            Some(MdBlock::Blockquote(inner)) => inner.len(),
+            Some(MdBlock::Table(rows)) => {
+                let col_count = rows.iter().map(|r| r.len()).max().unwrap_or(1);
+                rows.len() * col_count
+            }
+            _ => 0,
+        }
+    }
+
+    fn get_selected_text(&self) -> String {
+        let (start, end) = match self.normalize_sel() {
+            Some(s) => s,
+            None => return String::new(),
+        };
+        let mut result = String::new();
+        for bi in start.0..=end.0 {
+            let sub_count = self.block_sub_count(bi);
+            let si_start = if bi == start.0 { start.1 } else { 0 };
+            let si_end = if bi == end.0 { end.1 } else { sub_count.saturating_sub(1) };
+            for si in si_start..=si_end.min(sub_count.saturating_sub(1)) {
+                if let Some(text) = self.block_sub_text(bi, si) {
+                    let mut from = if bi == start.0 && si == start.1 { start.2.min(text.len()) } else { 0 };
+                    let mut to = if bi == end.0 && si == end.1 { end.2.min(text.len()) } else { text.len() };
+                    // Snap to valid char boundaries
+                    while from < text.len() && !text.is_char_boundary(from) { from += 1; }
+                    while to < text.len() && !text.is_char_boundary(to) { to += 1; }
+                    to = to.min(text.len());
+                    if from < to {
+                        if !result.is_empty() { result.push('\n'); }
+                        result.push_str(&text[from..to]);
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    fn start_auto_scroll(&mut self, cx: &mut Context<Self>) {
+        if self.auto_scroll_task.is_some() {
+            return;
+        }
+        let task = cx.spawn(async |entity: WeakEntity<Self>, cx: &mut AsyncApp| loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(40))
+                .await;
+            let should_continue = entity
+                .update(cx, |this, cx| {
+                    if !this.selecting || this.auto_scroll_speed == 0.0 {
+                        return false;
+                    }
+                    let offset = this.scroll_handle.offset();
+                    let step = px(this.auto_scroll_speed * 8.0);
+                    this.scroll_handle.set_offset(point(offset.x, offset.y - step));
+                    cx.notify();
+                    true
+                })
+                .unwrap_or(false);
+            if !should_continue {
+                break;
+            }
+        });
+        self.auto_scroll_task = Some(task);
+    }
+
+    fn stop_auto_scroll(&mut self) {
+        self.auto_scroll_speed = 0.0;
+        self.auto_scroll_task = None;
+    }
+
+    /// Build InteractiveText with on_hover for selection tracking
+    fn make_interactive(
+        &self,
+        id: ElementId,
+        styled: StyledText,
+        block_idx: usize,
+        sub_idx: usize,
+        link_ranges: Vec<Range<usize>>,
+        link_urls: Vec<String>,
+    ) -> InteractiveText {
+        let hb = self.hover_block.clone();
+        let hs = self.hover_sub.clone();
+        let hc = self.hover_char.clone();
+        let mut it = InteractiveText::new(id, styled)
+            .on_hover(move |char_idx, _ev, _window, _cx| {
+                hb.set(Some(block_idx));
+                hs.set(Some(sub_idx));
+                hc.set(char_idx);
+            });
+        if !link_ranges.is_empty() {
+            it = it.on_click(link_ranges, move |idx, _w, _cx| {
+                if let Some(url) = link_urls.get(idx) {
+                    let _ = std::process::Command::new("open").arg(url).spawn();
+                }
+            });
+        }
+        it
     }
 
     fn render_blocks(&mut self, cx: &mut Context<Self>) -> Div {
@@ -1156,7 +1403,7 @@ impl MarkdownPreviewView {
 
         let blocks = self.blocks.clone();
         for bi in first..last {
-            container = container.child(self.render_block(&blocks[bi], &format!("b{}", bi), cx));
+            container = container.child(self.render_block(&blocks[bi], bi, &format!("b{}", bi), cx));
         }
 
         if bottom_spacer_h > 0.0 {
@@ -1166,7 +1413,7 @@ impl MarkdownPreviewView {
         container
     }
 
-    fn render_block(&mut self, block: &MdBlock, id_prefix: &str, cx: &mut Context<Self>) -> Div {
+    fn render_block(&mut self, block: &MdBlock, block_idx: usize, id_prefix: &str, cx: &mut Context<Self>) -> Div {
         match block {
             MdBlock::Heading(level, inlines) => {
                 let (size, weight) = match level {
@@ -1177,8 +1424,15 @@ impl MarkdownPreviewView {
                     _ => (px(14.), FontWeight::SEMIBOLD),
                 };
                 let spans = flatten_inlines(inlines, false, false, false);
-                let (text, highlights, links) = build_styled_text(&spans);
+                let (text, mut highlights, links) = build_styled_text(&spans);
 
+                if let Some(sel) = self.sel_range_for(block_idx, 0, text.len()) {
+                    highlights.push((sel, HighlightStyle {
+                        background_color: Some(theme::selection().into()),
+                        ..Default::default()
+                    }));
+                }
+                let highlights = merge_highlights(&text, highlights);
                 let styled = StyledText::new(text.clone()).with_highlights(highlights);
 
                 let mut heading = div()
@@ -1195,49 +1449,34 @@ impl MarkdownPreviewView {
                         .pb(px(8.));
                 }
 
-                if links.is_empty() {
-                    heading.child(styled)
-                } else {
-                    let link_ranges: Vec<Range<usize>> = links.iter().map(|(r, _)| r.clone()).collect();
-                    let link_urls: Vec<String> = links.iter().map(|(_, u)| u.clone()).collect();
-                    let id = ElementId::Name(format!("{}-heading", id_prefix).into());
-                    heading.child(
-                        InteractiveText::new(id, styled)
-                            .on_click(link_ranges, move |idx, _window, _cx| {
-                                if let Some(url) = link_urls.get(idx) {
-                                    let _ = std::process::Command::new("open").arg(url).spawn();
-                                }
-                            })
-                    )
-                }
+                let link_ranges: Vec<Range<usize>> = links.iter().map(|(r, _)| r.clone()).collect();
+                let link_urls: Vec<String> = links.iter().map(|(_, u)| u.clone()).collect();
+                let id = ElementId::Name(format!("{}-heading", id_prefix).into());
+                heading.child(self.make_interactive(id, styled, block_idx, 0, link_ranges, link_urls))
             }
 
             MdBlock::Paragraph(inlines) => {
                 let spans = flatten_inlines(inlines, false, false, false);
-                let (text, highlights, links) = build_styled_text(&spans);
+                let (text, mut highlights, links) = build_styled_text(&spans);
 
+                if let Some(sel) = self.sel_range_for(block_idx, 0, text.len()) {
+                    highlights.push((sel, HighlightStyle {
+                        background_color: Some(theme::selection().into()),
+                        ..Default::default()
+                    }));
+                }
+                let highlights = merge_highlights(&text, highlights);
                 let styled = StyledText::new(text.clone()).with_highlights(highlights);
 
-                let para = div()
+                let link_ranges: Vec<Range<usize>> = links.iter().map(|(r, _)| r.clone()).collect();
+                let link_urls: Vec<String> = links.iter().map(|(_, u)| u.clone()).collect();
+                let id = ElementId::Name(format!("{}-para", id_prefix).into());
+
+                div()
                     .w_full()
                     .text_color(theme::text())
-                    .line_height(px(24.));
-
-                if links.is_empty() {
-                    para.child(styled)
-                } else {
-                    let link_ranges: Vec<Range<usize>> = links.iter().map(|(r, _)| r.clone()).collect();
-                    let link_urls: Vec<String> = links.iter().map(|(_, u)| u.clone()).collect();
-                    let id = ElementId::Name(format!("{}-para", id_prefix).into());
-                    para.child(
-                        InteractiveText::new(id, styled)
-                            .on_click(link_ranges, move |idx, _window, _cx| {
-                                if let Some(url) = link_urls.get(idx) {
-                                    let _ = std::process::Command::new("open").arg(url).spawn();
-                                }
-                            })
-                    )
-                }
+                    .line_height(px(24.))
+                    .child(self.make_interactive(id, styled, block_idx, 0, link_ranges, link_urls))
             }
 
             MdBlock::CodeBlock(lang, code) => {
@@ -1250,42 +1489,82 @@ impl MarkdownPreviewView {
                     .border_1()
                     .border_color(theme::surface1());
 
+                // Language label + copy button
+                let code_for_copy = code.clone();
+                let mut header = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .px(px(12.))
+                    .py(px(4.))
+                    .border_b_1()
+                    .border_color(theme::surface1());
+
                 if !lang.is_empty() {
-                    block_div = block_div.child(
-                        div()
-                            .px(px(12.))
-                            .py(px(4.))
-                            .text_xs()
-                            .text_color(theme::subtext())
-                            .border_b_1()
-                            .border_color(theme::surface1())
-                            .child(lang.clone()),
+                    header = header.child(
+                        div().text_xs().text_color(theme::subtext()).child(lang.clone())
                     );
+                } else {
+                    header = header.child(div());
                 }
+
+                header = header.child(
+                    div()
+                        .id(ElementId::Name(format!("{}-copy", id_prefix).into()))
+                        .cursor(CursorStyle::PointingHand)
+                        .px(px(6.))
+                        .py(px(2.))
+                        .rounded(px(3.))
+                        .text_xs()
+                        .text_color(theme::subtext())
+                        .hover(|d| d.bg(theme::surface1()).text_color(theme::text()))
+                        .on_click(cx.listener(move |_this, _ev: &ClickEvent, _window, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(code_for_copy.clone()));
+                        }))
+                        .child("Copy")
+                );
+                block_div = block_div.child(header);
 
                 let highlighted = highlight_code(lang, code);
 
-                let mut code_div = div()
-                    .flex()
-                    .flex_col()
+                // Build syntax highlight ranges for the full code text
+                let mut code_highlights: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
+                let mut byte_offset = 0usize;
+                for (line, line_tokens) in code.split('\n').zip(highlighted.iter()) {
+                    let mut token_offset = 0usize;
+                    for token in line_tokens {
+                        let start = byte_offset + token_offset;
+                        let end = start + token.text.len();
+                        if end <= code.len() {
+                            code_highlights.push((start..end, HighlightStyle {
+                                color: Some(token.color.into()),
+                                ..Default::default()
+                            }));
+                        }
+                        token_offset += token.text.len();
+                    }
+                    byte_offset += line.len() + 1;
+                }
+
+                if let Some(sel) = self.sel_range_for(block_idx, 0, code.len()) {
+                    code_highlights.push((sel, HighlightStyle {
+                        background_color: Some(theme::selection().into()),
+                        ..Default::default()
+                    }));
+                }
+                let code_highlights = merge_highlights(code, code_highlights);
+                let code_styled = StyledText::new(code.clone()).with_highlights(code_highlights);
+                let code_id = ElementId::Name(format!("{}-code-text", id_prefix).into());
+
+                let code_div = div()
                     .px(px(16.))
                     .py(px(12.))
                     .text_sm()
-                    .font_family("Berkeley Mono, SF Mono, Menlo, monospace");
-
-                for line_tokens in &highlighted {
-                    let mut line_div = div().flex().flex_row().h(px(20.));
-                    if line_tokens.is_empty() {
-                        line_div = line_div.child(" ");
-                    } else {
-                        for token in line_tokens {
-                            line_div = line_div.child(
-                                div().text_color(token.color).child(token.text.clone())
-                            );
-                        }
-                    }
-                    code_div = code_div.child(line_div);
-                }
+                    .line_height(px(20.))
+                    .font_family("Berkeley Mono, SF Mono, Menlo, monospace")
+                    .text_color(theme::text())
+                    .child(self.make_interactive(code_id, code_styled, block_idx, 0, vec![], vec![]));
 
                 block_div.child(code_div)
             }
@@ -1295,7 +1574,15 @@ impl MarkdownPreviewView {
                 for (ii, item) in items.iter().enumerate() {
                     let item_id = format!("{}-ul{}", id_prefix, ii);
                     let spans = flatten_inlines(&item.content, false, false, false);
-                    let (text, highlights, links) = build_styled_text(&spans);
+                    let (text, mut highlights, links) = build_styled_text(&spans);
+
+                    if let Some(sel) = self.sel_range_for(block_idx, ii, text.len()) {
+                        highlights.push((sel, HighlightStyle {
+                            background_color: Some(theme::selection().into()),
+                            ..Default::default()
+                        }));
+                    }
+                    let highlights = merge_highlights(&text, highlights);
                     let styled = StyledText::new(text.clone()).with_highlights(highlights);
 
                     let bullet = match item.checkbox {
@@ -1304,22 +1591,11 @@ impl MarkdownPreviewView {
                         None => div().flex_shrink_0().mr(px(8.)).text_color(theme::overlay()).child("\u{2022}"),
                     };
 
-                    let content_div = div().flex_1().min_w(px(0.)).text_color(theme::text());
-                    let content_div = if links.is_empty() {
-                        content_div.child(styled)
-                    } else {
-                        let link_ranges: Vec<Range<usize>> = links.iter().map(|(r, _)| r.clone()).collect();
-                        let link_urls: Vec<String> = links.iter().map(|(_, u)| u.clone()).collect();
-                        let id = ElementId::Name(format!("{}-text", item_id).into());
-                        content_div.child(
-                            InteractiveText::new(id, styled)
-                                .on_click(link_ranges, move |idx, _w, _cx| {
-                                    if let Some(url) = link_urls.get(idx) {
-                                        let _ = std::process::Command::new("open").arg(url).spawn();
-                                    }
-                                })
-                        )
-                    };
+                    let link_ranges: Vec<Range<usize>> = links.iter().map(|(r, _)| r.clone()).collect();
+                    let link_urls: Vec<String> = links.iter().map(|(_, u)| u.clone()).collect();
+                    let id = ElementId::Name(format!("{}-text", item_id).into());
+                    let content_div = div().flex_1().min_w(px(0.)).text_color(theme::text())
+                        .child(self.make_interactive(id, styled, block_idx, ii, link_ranges, link_urls));
 
                     let row = div().flex().flex_row().items_start()
                         .child(bullet)
@@ -1332,7 +1608,7 @@ impl MarkdownPreviewView {
                         item_container = item_container.child(row);
                         for (ci, child) in item.children.iter().enumerate() {
                             let child_id = format!("{}-c{}", item_id, ci);
-                            item_container = item_container.child(self.render_block(child, &child_id, cx));
+                            item_container = item_container.child(self.render_block(child, block_idx, &child_id, cx));
                         }
                         list = list.child(item_container);
                     }
@@ -1345,7 +1621,15 @@ impl MarkdownPreviewView {
                 for (i, item) in items.iter().enumerate() {
                     let item_id = format!("{}-ol{}", id_prefix, i);
                     let spans = flatten_inlines(&item.content, false, false, false);
-                    let (text, highlights, links) = build_styled_text(&spans);
+                    let (text, mut highlights, links) = build_styled_text(&spans);
+
+                    if let Some(sel) = self.sel_range_for(block_idx, i, text.len()) {
+                        highlights.push((sel, HighlightStyle {
+                            background_color: Some(theme::selection().into()),
+                            ..Default::default()
+                        }));
+                    }
+                    let highlights = merge_highlights(&text, highlights);
                     let styled = StyledText::new(text.clone()).with_highlights(highlights);
 
                     let marker = match item.checkbox {
@@ -1354,22 +1638,11 @@ impl MarkdownPreviewView {
                         None => div().flex_shrink_0().mr(px(8.)).min_w(px(18.)).text_right().text_color(theme::overlay()).child(format!("{}.", i + 1)),
                     };
 
-                    let content_div = div().flex_1().min_w(px(0.)).text_color(theme::text());
-                    let content_div = if links.is_empty() {
-                        content_div.child(styled)
-                    } else {
-                        let link_ranges: Vec<Range<usize>> = links.iter().map(|(r, _)| r.clone()).collect();
-                        let link_urls: Vec<String> = links.iter().map(|(_, u)| u.clone()).collect();
-                        let id = ElementId::Name(format!("{}-text", item_id).into());
-                        content_div.child(
-                            InteractiveText::new(id, styled)
-                                .on_click(link_ranges, move |idx, _w, _cx| {
-                                    if let Some(url) = link_urls.get(idx) {
-                                        let _ = std::process::Command::new("open").arg(url).spawn();
-                                    }
-                                })
-                        )
-                    };
+                    let link_ranges: Vec<Range<usize>> = links.iter().map(|(r, _)| r.clone()).collect();
+                    let link_urls: Vec<String> = links.iter().map(|(_, u)| u.clone()).collect();
+                    let id = ElementId::Name(format!("{}-text", item_id).into());
+                    let content_div = div().flex_1().min_w(px(0.)).text_color(theme::text())
+                        .child(self.make_interactive(id, styled, block_idx, i, link_ranges, link_urls));
 
                     let row = div().flex().flex_row().items_start()
                         .child(marker)
@@ -1382,7 +1655,7 @@ impl MarkdownPreviewView {
                         item_container = item_container.child(row);
                         for (ci, child) in item.children.iter().enumerate() {
                             let child_id = format!("{}-c{}", item_id, ci);
-                            item_container = item_container.child(self.render_block(child, &child_id, cx));
+                            item_container = item_container.child(self.render_block(child, block_idx, &child_id, cx));
                         }
                         list = list.child(item_container);
                     }
@@ -1412,7 +1685,7 @@ impl MarkdownPreviewView {
                 let blocks = inner_blocks.clone();
                 for (bi, inner) in blocks.iter().enumerate() {
                     let inner_id = format!("{}-bq{}", id_prefix, bi);
-                    quote = quote.child(self.render_block(inner, &inner_id, cx));
+                    quote = quote.child(self.render_block(inner, block_idx, &inner_id, cx));
                 }
                 quote
             }
@@ -1470,8 +1743,21 @@ impl MarkdownPreviewView {
                     for col_idx in 0..col_count {
                         let cell_inlines = row.get(col_idx).cloned().unwrap_or_default();
                         let spans = flatten_inlines(&cell_inlines, is_header, false, false);
-                        let (text, highlights, _links) = build_styled_text(&spans);
-                        let styled = StyledText::new(text).with_highlights(highlights);
+                        let (text, mut highlights, links) = build_styled_text(&spans);
+                        let sub_idx = row_idx * col_count + col_idx;
+
+                        if let Some(sel) = self.sel_range_for(block_idx, sub_idx, text.len()) {
+                            highlights.push((sel, HighlightStyle {
+                                background_color: Some(theme::selection().into()),
+                                ..Default::default()
+                            }));
+                        }
+                        let highlights = merge_highlights(&text, highlights);
+                        let styled = StyledText::new(text.clone()).with_highlights(highlights);
+
+                        let cell_id = ElementId::Name(format!("{}-cell-{}-{}", id_prefix, row_idx, col_idx).into());
+                        let link_ranges: Vec<Range<usize>> = links.iter().map(|(r, _)| r.clone()).collect();
+                        let link_urls: Vec<String> = links.iter().map(|(_, u)| u.clone()).collect();
 
                         let mut cell = div()
                             .w(px(col_px.get(col_idx).copied().unwrap_or(100.0)))
@@ -1484,7 +1770,7 @@ impl MarkdownPreviewView {
                         if col_idx > 0 {
                             cell = cell.border_l_1().border_color(theme::surface1());
                         }
-                        cell = cell.child(styled);
+                        cell = cell.child(self.make_interactive(cell_id, styled, block_idx, sub_idx, link_ranges, link_urls));
                         row_div = row_div.child(cell);
                     }
 
@@ -1571,6 +1857,12 @@ impl MarkdownPreviewView {
     }
 }
 
+impl Focusable for MarkdownPreviewView {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
 impl Render for MarkdownPreviewView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
@@ -1578,8 +1870,88 @@ impl Render for MarkdownPreviewView {
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll_handle)
+            .track_focus(&self.focus_handle)
+            .cursor(CursorStyle::IBeam)
             .on_scroll_wheel(cx.listener(|_this, _ev: &ScrollWheelEvent, _window, cx| {
                 cx.notify();
+            }))
+            .on_mouse_down(MouseButton::Left, cx.listener(|this, _ev: &MouseDownEvent, window, cx| {
+                this.focus_handle.focus(window);
+                let hb = this.hover_block.get();
+                let hs = this.hover_sub.get();
+                let hc = this.hover_char.get();
+                if let (Some(bi), Some(si), Some(ci)) = (hb, hs, hc) {
+                    this.selecting = true;
+                    this.sel_anchor = Some((bi, si, ci));
+                    this.sel_cursor = Some((bi, si, ci));
+                    cx.notify();
+                } else {
+                    this.sel_anchor = None;
+                    this.sel_cursor = None;
+                    this.selecting = false;
+                    cx.notify();
+                }
+            }))
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _window, cx| {
+                if this.selecting && ev.pressed_button == Some(MouseButton::Left) {
+                    let hb = this.hover_block.get();
+                    let hs = this.hover_sub.get();
+                    let hc = this.hover_char.get();
+                    if let (Some(bi), Some(si), Some(ci)) = (hb, hs, hc) {
+                        this.sel_cursor = Some((bi, si, ci));
+                        cx.notify();
+                    }
+                    // Auto-scroll when dragging near edges
+                    let mouse_y: f32 = ev.position.y.into();
+                    let bounds = this.scroll_handle.bounds();
+                    let top: f32 = bounds.top().into();
+                    let bottom: f32 = bounds.bottom().into();
+                    let zone = 80.0_f32;
+                    if mouse_y > bottom - zone {
+                        let ratio = ((mouse_y - (bottom - zone)) / zone).min(1.0);
+                        this.auto_scroll_speed = 1.0 + ratio * 9.0;
+                        this.start_auto_scroll(cx);
+                    } else if mouse_y < top + zone {
+                        let ratio = (((top + zone) - mouse_y) / zone).min(1.0);
+                        this.auto_scroll_speed = -(1.0 + ratio * 9.0);
+                        this.start_auto_scroll(cx);
+                    } else {
+                        this.stop_auto_scroll();
+                    }
+                }
+            }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _ev: &MouseUpEvent, _window, _cx| {
+                this.selecting = false;
+                this.stop_auto_scroll();
+                if this.sel_anchor == this.sel_cursor {
+                    this.sel_anchor = None;
+                    this.sel_cursor = None;
+                }
+            }))
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _window, cx| {
+                if ev.keystroke.modifiers.platform {
+                    match ev.keystroke.key.as_str() {
+                        "c" => {
+                            let text = this.get_selected_text();
+                            if !text.is_empty() {
+                                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                            }
+                        }
+                        "a" => {
+                            // Select all
+                            let total = this.blocks.len();
+                            if total > 0 {
+                                let last_sub = this.block_sub_count(total - 1).saturating_sub(1);
+                                let last_text = this.block_sub_text(total - 1, last_sub)
+                                    .map(|t| t.len()).unwrap_or(0);
+                                this.sel_anchor = Some((0, 0, 0));
+                                this.sel_cursor = Some((total - 1, last_sub, last_text));
+                                cx.notify();
+                            }
+                        }
+                        _ => {}
+                    }
+                }
             }))
             .bg(theme::base())
             .font_family("SF Pro Display, Helvetica Neue, sans-serif")

@@ -1111,7 +1111,7 @@ impl AppView {
 
         let title = format!("Preview: {}", filename);
         let icon = "crates/app/assets/markdown.svg";
-        let md_view = cx.new(|_cx| MarkdownPreviewView::new(path));
+        let md_view = cx.new(|cx| MarkdownPreviewView::new(path, cx));
 
         pane.update(cx, |p, _cx| {
             p.add_tab(title, icon, detail, AnyView::from(md_view), true);
