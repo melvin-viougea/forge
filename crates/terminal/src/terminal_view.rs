@@ -723,6 +723,8 @@ impl Render for TerminalView {
                 this.data_burst_count = 0;
                 this.last_data_time = None;
 
+                let alt = ev.keystroke.modifiers.alt;
+
                 let handled = match ev.keystroke.key.as_str() {
                     "enter" | "backspace" | "tab" | "escape" | "space"
                     | "up" | "down" | "left" | "right" | "delete" | "home" | "end" => {
@@ -732,6 +734,12 @@ impl Render for TerminalView {
                             this.terminal.write_input(dead.encode_utf8(&mut buf).as_bytes());
                         }
                         match ev.keystroke.key.as_str() {
+                            // Option+Arrow/Backspace/Delete: word-level movement & deletion
+                            "left" if alt => this.terminal.write_input(b"\x1bb"),
+                            "right" if alt => this.terminal.write_input(b"\x1bf"),
+                            "backspace" if alt => this.terminal.write_input(b"\x1b\x7f"),
+                            "delete" if alt => this.terminal.write_input(b"\x1bd"),
+                            // Standard keys
                             "backspace" => this.terminal.write_input(b"\x7f"),
                             "tab" => this.terminal.write_input(b"\t"),
                             "escape" => this.terminal.write_input(b"\x1b"),
@@ -756,6 +764,23 @@ impl Render for TerminalView {
                                 true
                             } else {
                                 false
+                            }
+                        } else if alt {
+                            // Option/Alt as meta key: send ESC prefix + character
+                            if let Some(key_char) = &ev.keystroke.key_char {
+                                this.terminal.write_input(b"\x1b");
+                                this.terminal.write_input(key_char.as_bytes());
+                                true
+                            } else {
+                                let ch = ev.keystroke.key.chars().next().unwrap_or('\0');
+                                if ch != '\0' {
+                                    let mut buf = [0u8; 4];
+                                    this.terminal.write_input(b"\x1b");
+                                    this.terminal.write_input(ch.encode_utf8(&mut buf).as_bytes());
+                                    true
+                                } else {
+                                    false
+                                }
                             }
                         } else if let Some(key_char) = &ev.keystroke.key_char {
                             if !ev.keystroke.modifiers.platform {

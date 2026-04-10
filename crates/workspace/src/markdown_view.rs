@@ -1,4 +1,5 @@
 use gpui::*;
+use std::ops::Range;
 use std::path::PathBuf;
 
 use crate::theme;
@@ -164,14 +165,25 @@ fn parse_blocks(lines: &[&str], start: usize, end: usize) -> (Vec<MdBlock>, usiz
 
         // Paragraph (fallback — always advances i to prevent infinite loop)
         let mut para = String::new();
+        let mut prev_hard_break = false;
         while i < end && !lines[i].trim().is_empty()
             && !lines[i].starts_with('#')
             && !lines[i].trim_start().starts_with("```")
             && !lines[i].trim_start().starts_with("- ")
             && !lines[i].trim_start().starts_with("* ")
             && !lines[i].trim_start().starts_with("> ")
+            // Stop when a table starts (line with | followed by separator)
+            && !(lines[i].contains('|') && i + 1 < end && is_table_separator(lines[i + 1]))
         {
-            if !para.is_empty() { para.push(' '); }
+            if !para.is_empty() {
+                if prev_hard_break {
+                    para.push('\n');
+                } else {
+                    para.push(' ');
+                }
+            }
+            // Markdown hard break: two trailing spaces → line break
+            prev_hard_break = lines[i].ends_with("  ");
             para.push_str(lines[i].trim());
             i += 1;
         }
@@ -551,115 +563,54 @@ fn flatten_inlines(inlines: &[MdInline], bold: bool, italic: bool, strike: bool)
     spans
 }
 
-/// Split spans into word-level divs for proper flex-wrap
-fn render_inline_spans(spans: &[InlineSpan]) -> Vec<Div> {
-    let mut divs = Vec::new();
+/// Build a StyledText element from inline spans — uses GPUI native text wrapping
+/// instead of flex_row + flex_wrap to avoid layout gaps on fullscreen.
+/// Returns (styled_text_element, link_urls) where link_urls maps link index to URL.
+fn build_styled_text(spans: &[InlineSpan]) -> (String, Vec<(Range<usize>, HighlightStyle)>, Vec<(Range<usize>, String)>) {
+    let mut full_text = String::new();
+    let mut highlights: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
+    let mut links: Vec<(Range<usize>, String)> = Vec::new();
 
     for span in spans {
+        let start = full_text.len();
+        full_text.push_str(&span.text);
+        let end = full_text.len();
+        if start == end { continue; }
+
+        let mut hl = HighlightStyle::default();
+        let mut has_style = false;
+
+        if let Some(c) = span.color {
+            hl.color = Some(c.into());
+            has_style = true;
+        }
+        if let Some(w) = span.weight {
+            hl.font_weight = Some(w);
+            has_style = true;
+        }
         if span.monospace {
-            let mut d = div()
-                .font_family("Berkeley Mono, SF Mono, Menlo, monospace")
-                .text_sm()
-                .text_color(span.color.unwrap_or(theme::text()));
-            if let Some(w) = span.weight {
-                d = d.font_weight(w);
-            }
-            if span.strikethrough {
-                d = d.text_color(theme::overlay());
-            }
-            d = d.child(span.text.clone());
-            divs.push(d);
-        } else {
-            let words = split_preserving_spaces(&span.text);
-            for word in words {
-                let mut d = div();
-                if let Some(c) = span.color {
-                    d = d.text_color(c);
-                }
-                if let Some(w) = span.weight {
-                    d = d.font_weight(w);
-                }
-                if span.strikethrough {
-                    d = d.text_color(theme::overlay());
-                }
-                if span.link_url.is_some() {
-                    // links: blue color only, no underline in GPUI
-                }
-                d = d.child(word);
-                divs.push(d);
-            }
+            hl.background_color = Some(Hsla::from(theme::surface0()));
+            has_style = true;
         }
-    }
+        if span.strikethrough {
+            hl.strikethrough = Some(StrikethroughStyle { thickness: px(1.), color: None });
+            has_style = true;
+        }
+        if span.link_url.is_some() {
+            hl.color = Some(Hsla::from(theme::blue()));
+            hl.underline = Some(UnderlineStyle { thickness: px(1.), color: None, wavy: false });
+            has_style = true;
+        }
 
-    divs
-}
-
-/// Render inline spans as clickable elements (for links)
-fn render_inline_spans_interactive(spans: &[InlineSpan], cx: &mut Context<MarkdownPreviewView>, id_prefix: &str) -> Vec<AnyElement> {
-    let mut elements: Vec<AnyElement> = Vec::new();
-    let mut link_idx = 0usize;
-
-    for span in spans {
+        if has_style {
+            highlights.push((start..end, hl));
+        }
         if let Some(url) = &span.link_url {
-            let url = url.clone();
-            let id = ElementId::Name(format!("{}-link-{}", id_prefix, link_idx).into());
-            link_idx += 1;
-            let mut d = div()
-                .id(id)
-                .cursor_pointer()
-                .text_color(theme::blue())
-                .hover(|d| d.text_color(theme::lavender()));
-            if let Some(w) = span.weight {
-                d = d.font_weight(w);
-            }
-            d = d
-                .child(span.text.clone())
-                .on_click(cx.listener(move |_this, _ev, _window, _cx| {
-                    let _ = std::process::Command::new("open").arg(&url).spawn();
-                }));
-            elements.push(d.into_any_element());
-        } else if span.monospace {
-            let mut d = div()
-                .font_family("Berkeley Mono, SF Mono, Menlo, monospace")
-                .text_sm()
-                .text_color(span.color.unwrap_or(theme::text()));
-            if let Some(w) = span.weight { d = d.font_weight(w); }
-            if span.strikethrough { d = d.text_color(theme::overlay()); }
-            d = d.child(span.text.clone());
-            elements.push(d.into_any_element());
-        } else {
-            let words = split_preserving_spaces(&span.text);
-            for word in words {
-                let mut d = div();
-                if let Some(c) = span.color { d = d.text_color(c); }
-                if let Some(w) = span.weight { d = d.font_weight(w); }
-                if span.strikethrough { d = d.text_color(theme::overlay()); }
-                d = d.child(word);
-                elements.push(d.into_any_element());
-            }
+            links.push((start..end, url.clone()));
         }
     }
 
-    elements
-}
-
-fn split_preserving_spaces(text: &str) -> Vec<String> {
-    if text.is_empty() { return vec![]; }
-    let mut chunks = Vec::new();
-    let mut current = String::new();
-
-    for ch in text.chars() {
-        if ch == ' ' {
-            current.push(ch);
-            chunks.push(std::mem::take(&mut current));
-        } else {
-            current.push(ch);
-        }
-    }
-    if !current.is_empty() {
-        chunks.push(current);
-    }
-    chunks
+    (full_text, highlights, links)
 }
 
 // ── Syntax highlighting (regex-based) ────────────────────
@@ -1047,11 +998,77 @@ fn highlight_c_like(line: &str) -> Vec<SyntaxToken> {
     tokenize_generic(line, KW, TY, "//")
 }
 
+// ── Height estimation (for viewport virtualization) ──────
+
+/// Estimate the rendered height of a block in pixels.
+/// Approximate — doesn't need to be exact, just close enough for virtualization.
+const EST_LINE_H: f32 = 24.0;
+const EST_CHARS_PER_LINE: f32 = 80.0;
+const EST_GAP: f32 = 4.0;
+
+fn estimate_block_height(block: &MdBlock, container_w: f32) -> f32 {
+    match block {
+        MdBlock::Heading(level, inlines) => {
+            let text_len = inline_text_len(inlines) as f32;
+            let font_h = match level { 1 => 36.0, 2 => 30.0, 3 => 26.0, _ => 22.0 };
+            let chars_per_line = container_w / (font_h * 0.55);
+            let lines = (text_len / chars_per_line).ceil().max(1.0);
+            12.0 + lines * font_h + 8.0 + if *level <= 2 { 1.0 } else { 0.0 }
+        }
+        MdBlock::Paragraph(inlines) => {
+            let text_len = inline_text_len(inlines) as f32;
+            let lines = (text_len / EST_CHARS_PER_LINE).ceil().max(1.0);
+            lines * EST_LINE_H
+        }
+        MdBlock::CodeBlock(_, code) => {
+            let code_lines = code.lines().count().max(1) as f32;
+            24.0 + code_lines * 20.0 + 16.0 // header + lines + padding
+        }
+        MdBlock::UnorderedList(items) | MdBlock::OrderedList(items) => {
+            let mut h = 0.0;
+            for item in items {
+                let text_len = inline_text_len(&item.content) as f32;
+                let lines = (text_len / EST_CHARS_PER_LINE).ceil().max(1.0);
+                h += lines * EST_LINE_H + 2.0;
+                for child in &item.children {
+                    h += estimate_block_height(child, container_w - 16.0);
+                }
+            }
+            h
+        }
+        MdBlock::HorizontalRule => 25.0,
+        MdBlock::Blockquote(inner) => {
+            let mut h = 8.0; // py
+            for b in inner {
+                h += estimate_block_height(b, container_w - 16.0) + EST_GAP;
+            }
+            h
+        }
+        MdBlock::Table(rows) => {
+            rows.len() as f32 * 36.0 + 2.0 // ~36px per row + border
+        }
+    }
+}
+
+fn inline_text_len(inlines: &[MdInline]) -> usize {
+    inlines.iter().map(|il| match il {
+        MdInline::Text(t) => t.len(),
+        MdInline::Bold(c) | MdInline::Italic(c) | MdInline::BoldItalic(c) | MdInline::Strikethrough(c) => inline_text_len(c),
+        MdInline::Code(t) => t.len(),
+        MdInline::Link(t, _) => t.len(),
+    }).sum()
+}
+
 // ── View ──────────────────────────────────────────────────
 
 pub struct MarkdownPreviewView {
     path: PathBuf,
     blocks: Vec<MdBlock>,
+    block_heights: Vec<f32>,
+    /// Per-table horizontal scroll offsets, keyed by block index
+    table_scroll_x: std::collections::HashMap<usize, f32>,
+    /// Width of each table (total content width), keyed by block index
+    table_widths: std::collections::HashMap<usize, f32>,
     scroll_handle: ScrollHandle,
 }
 
@@ -1059,9 +1076,16 @@ impl MarkdownPreviewView {
     pub fn new(path: PathBuf) -> Self {
         let content = std::fs::read_to_string(&path).unwrap_or_default();
         let blocks = parse_markdown(&content);
+        let container_w = 800.0 - 64.0; // max_w minus padding
+        let block_heights: Vec<f32> = blocks.iter()
+            .map(|b| estimate_block_height(b, container_w))
+            .collect();
         Self {
             path,
             blocks,
+            block_heights,
+            table_scroll_x: std::collections::HashMap::new(),
+            table_widths: std::collections::HashMap::new(),
             scroll_handle: ScrollHandle::new(),
         }
     }
@@ -1071,17 +1095,72 @@ impl MarkdownPreviewView {
     }
 
     fn render_blocks(&mut self, cx: &mut Context<Self>) -> Div {
+        let total_blocks = self.blocks.len();
+
+        // Viewport virtualization: only render visible blocks ± buffer
+        let scroll_y: f32 = (-self.scroll_handle.offset().y).into();
+        let viewport_h: f32 = self.scroll_handle.bounds().size.height.into();
+        let padding_top = 32.0_f32;
+
+        let (first, last, top_spacer_h, bottom_spacer_h) = if viewport_h > 0.0 && total_blocks > 30 {
+            let buffer_px = 500.0_f32;
+            let view_top = (scroll_y - buffer_px).max(0.0);
+            let view_bottom = scroll_y + viewport_h + buffer_px;
+
+            let mut cumulative = padding_top;
+            let mut first_idx = total_blocks;
+            let mut last_idx = total_blocks;
+
+            for (i, h) in self.block_heights.iter().enumerate() {
+                let block_bottom = cumulative + h + EST_GAP;
+                if first_idx == total_blocks && block_bottom > view_top {
+                    first_idx = i;
+                }
+                if cumulative > view_bottom {
+                    last_idx = i;
+                    break;
+                }
+                cumulative += h + EST_GAP;
+            }
+
+            if first_idx == total_blocks { first_idx = 0; }
+            if last_idx == total_blocks { last_idx = total_blocks; }
+
+            // Compute spacer heights
+            let top_h: f32 = self.block_heights[..first_idx].iter()
+                .map(|h| h + EST_GAP).sum();
+            let bottom_h: f32 = self.block_heights[last_idx..].iter()
+                .map(|h| h + EST_GAP).sum();
+
+            (first_idx, last_idx, top_h, bottom_h)
+        } else {
+            // Small document — render everything
+            (0, total_blocks, 0.0, 0.0)
+        };
+
+        // Explicit container width for proper text wrapping in fullscreen
+        let scroll_w: f32 = self.scroll_handle.bounds().size.width.into();
+        let container_w = if scroll_w > 0.0 { scroll_w } else { 800.0 };
+
         let mut container = div()
             .flex()
             .flex_col()
             .flex_shrink_0()
+            .w(px(container_w))
             .p(px(32.))
-            .gap(px(4.))
-            .max_w(px(800.));
+            .gap(px(4.));
+
+        if top_spacer_h > 0.0 {
+            container = container.child(div().h(px(top_spacer_h)).flex_shrink_0());
+        }
 
         let blocks = self.blocks.clone();
-        for (bi, block) in blocks.iter().enumerate() {
-            container = container.child(self.render_block(block, &format!("b{}", bi), cx));
+        for bi in first..last {
+            container = container.child(self.render_block(&blocks[bi], &format!("b{}", bi), cx));
+        }
+
+        if bottom_spacer_h > 0.0 {
+            container = container.child(div().h(px(bottom_spacer_h)).flex_shrink_0());
         }
 
         container
@@ -1098,13 +1177,12 @@ impl MarkdownPreviewView {
                     _ => (px(14.), FontWeight::SEMIBOLD),
                 };
                 let spans = flatten_inlines(inlines, false, false, false);
-                let word_divs = render_inline_spans_interactive(&spans, cx, id_prefix);
+                let (text, highlights, links) = build_styled_text(&spans);
+
+                let styled = StyledText::new(text.clone()).with_highlights(highlights);
 
                 let mut heading = div()
-                    .flex()
-                    .flex_row()
-                    .flex_wrap()
-                    .items_baseline()
+                    .w_full()
                     .text_size(size)
                     .font_weight(weight)
                     .text_color(theme::text())
@@ -1116,27 +1194,50 @@ impl MarkdownPreviewView {
                         .border_color(theme::surface1())
                         .pb(px(8.));
                 }
-                for d in word_divs {
-                    heading = heading.child(d);
+
+                if links.is_empty() {
+                    heading.child(styled)
+                } else {
+                    let link_ranges: Vec<Range<usize>> = links.iter().map(|(r, _)| r.clone()).collect();
+                    let link_urls: Vec<String> = links.iter().map(|(_, u)| u.clone()).collect();
+                    let id = ElementId::Name(format!("{}-heading", id_prefix).into());
+                    heading.child(
+                        InteractiveText::new(id, styled)
+                            .on_click(link_ranges, move |idx, _window, _cx| {
+                                if let Some(url) = link_urls.get(idx) {
+                                    let _ = std::process::Command::new("open").arg(url).spawn();
+                                }
+                            })
+                    )
                 }
-                heading
             }
 
             MdBlock::Paragraph(inlines) => {
                 let spans = flatten_inlines(inlines, false, false, false);
-                let word_divs = render_inline_spans_interactive(&spans, cx, id_prefix);
+                let (text, highlights, links) = build_styled_text(&spans);
 
-                let mut para = div()
-                    .flex()
-                    .flex_row()
-                    .flex_wrap()
-                    .items_baseline()
+                let styled = StyledText::new(text.clone()).with_highlights(highlights);
+
+                let para = div()
+                    .w_full()
                     .text_color(theme::text())
                     .line_height(px(24.));
-                for d in word_divs {
-                    para = para.child(d);
+
+                if links.is_empty() {
+                    para.child(styled)
+                } else {
+                    let link_ranges: Vec<Range<usize>> = links.iter().map(|(r, _)| r.clone()).collect();
+                    let link_urls: Vec<String> = links.iter().map(|(_, u)| u.clone()).collect();
+                    let id = ElementId::Name(format!("{}-para", id_prefix).into());
+                    para.child(
+                        InteractiveText::new(id, styled)
+                            .on_click(link_ranges, move |idx, _window, _cx| {
+                                if let Some(url) = link_urls.get(idx) {
+                                    let _ = std::process::Command::new("open").arg(url).spawn();
+                                }
+                            })
+                    )
                 }
-                para
             }
 
             MdBlock::CodeBlock(lang, code) => {
@@ -1194,36 +1295,35 @@ impl MarkdownPreviewView {
                 for (ii, item) in items.iter().enumerate() {
                     let item_id = format!("{}-ul{}", id_prefix, ii);
                     let spans = flatten_inlines(&item.content, false, false, false);
-                    let word_divs = render_inline_spans_interactive(&spans, cx, &item_id);
-                    let mut row = div()
-                        .flex()
-                        .flex_row()
-                        .flex_wrap()
-                        .items_baseline()
-                        .text_color(theme::text());
+                    let (text, highlights, links) = build_styled_text(&spans);
+                    let styled = StyledText::new(text.clone()).with_highlights(highlights);
 
-                    // Checkbox or bullet
-                    match item.checkbox {
-                        Some(true) => {
-                            row = row.child(
-                                div().mr(px(8.)).text_color(theme::green()).child("\u{2611}")
-                            );
-                        }
-                        Some(false) => {
-                            row = row.child(
-                                div().mr(px(8.)).text_color(theme::overlay()).child("\u{2610}")
-                            );
-                        }
-                        None => {
-                            row = row.child(
-                                div().text_color(theme::overlay()).mr(px(8.)).child("\u{2022}")
-                            );
-                        }
-                    }
+                    let bullet = match item.checkbox {
+                        Some(true) => div().flex_shrink_0().mr(px(8.)).text_color(theme::green()).child("\u{2611}"),
+                        Some(false) => div().flex_shrink_0().mr(px(8.)).text_color(theme::overlay()).child("\u{2610}"),
+                        None => div().flex_shrink_0().mr(px(8.)).text_color(theme::overlay()).child("\u{2022}"),
+                    };
 
-                    for d in word_divs {
-                        row = row.child(d);
-                    }
+                    let content_div = div().flex_1().min_w(px(0.)).text_color(theme::text());
+                    let content_div = if links.is_empty() {
+                        content_div.child(styled)
+                    } else {
+                        let link_ranges: Vec<Range<usize>> = links.iter().map(|(r, _)| r.clone()).collect();
+                        let link_urls: Vec<String> = links.iter().map(|(_, u)| u.clone()).collect();
+                        let id = ElementId::Name(format!("{}-text", item_id).into());
+                        content_div.child(
+                            InteractiveText::new(id, styled)
+                                .on_click(link_ranges, move |idx, _w, _cx| {
+                                    if let Some(url) = link_urls.get(idx) {
+                                        let _ = std::process::Command::new("open").arg(url).spawn();
+                                    }
+                                })
+                        )
+                    };
+
+                    let row = div().flex().flex_row().items_start()
+                        .child(bullet)
+                        .child(content_div);
 
                     if item.children.is_empty() {
                         list = list.child(row);
@@ -1245,40 +1345,35 @@ impl MarkdownPreviewView {
                 for (i, item) in items.iter().enumerate() {
                     let item_id = format!("{}-ol{}", id_prefix, i);
                     let spans = flatten_inlines(&item.content, false, false, false);
-                    let word_divs = render_inline_spans_interactive(&spans, cx, &item_id);
-                    let mut row = div()
-                        .flex()
-                        .flex_row()
-                        .flex_wrap()
-                        .items_baseline()
-                        .text_color(theme::text());
+                    let (text, highlights, links) = build_styled_text(&spans);
+                    let styled = StyledText::new(text.clone()).with_highlights(highlights);
 
-                    match item.checkbox {
-                        Some(true) => {
-                            row = row.child(
-                                div().mr(px(8.)).text_color(theme::green()).child(format!("{}. \u{2611}", i + 1))
-                            );
-                        }
-                        Some(false) => {
-                            row = row.child(
-                                div().mr(px(8.)).text_color(theme::overlay()).child(format!("{}. \u{2610}", i + 1))
-                            );
-                        }
-                        None => {
-                            row = row.child(
-                                div()
-                                    .text_color(theme::overlay())
-                                    .mr(px(8.))
-                                    .min_w(px(18.))
-                                    .text_right()
-                                    .child(format!("{}.", i + 1)),
-                            );
-                        }
-                    }
+                    let marker = match item.checkbox {
+                        Some(true) => div().flex_shrink_0().mr(px(8.)).text_color(theme::green()).child(format!("{}. \u{2611}", i + 1)),
+                        Some(false) => div().flex_shrink_0().mr(px(8.)).text_color(theme::overlay()).child(format!("{}. \u{2610}", i + 1)),
+                        None => div().flex_shrink_0().mr(px(8.)).min_w(px(18.)).text_right().text_color(theme::overlay()).child(format!("{}.", i + 1)),
+                    };
 
-                    for d in word_divs {
-                        row = row.child(d);
-                    }
+                    let content_div = div().flex_1().min_w(px(0.)).text_color(theme::text());
+                    let content_div = if links.is_empty() {
+                        content_div.child(styled)
+                    } else {
+                        let link_ranges: Vec<Range<usize>> = links.iter().map(|(r, _)| r.clone()).collect();
+                        let link_urls: Vec<String> = links.iter().map(|(_, u)| u.clone()).collect();
+                        let id = ElementId::Name(format!("{}-text", item_id).into());
+                        content_div.child(
+                            InteractiveText::new(id, styled)
+                                .on_click(link_ranges, move |idx, _w, _cx| {
+                                    if let Some(url) = link_urls.get(idx) {
+                                        let _ = std::process::Command::new("open").arg(url).spawn();
+                                    }
+                                })
+                        )
+                    };
+
+                    let row = div().flex().flex_row().items_start()
+                        .child(marker)
+                        .child(content_div);
 
                     if item.children.is_empty() {
                         list = list.child(row);
@@ -1326,6 +1421,7 @@ impl MarkdownPreviewView {
                 if rows.is_empty() { return div(); }
                 let col_count = rows.iter().map(|r| r.len()).max().unwrap_or(0);
 
+                // Calculate column widths based on content
                 let mut col_max_len: Vec<usize> = vec![0; col_count];
                 for row in rows {
                     for (ci, cell) in row.iter().enumerate() {
@@ -1339,26 +1435,31 @@ impl MarkdownPreviewView {
                         col_max_len[ci] = col_max_len[ci].max(len);
                     }
                 }
-                let flex_col = col_max_len.iter().enumerate()
-                    .max_by_key(|(_, l)| *l)
-                    .map(|(i, _)| i)
-                    .unwrap_or(col_count.saturating_sub(1));
                 let col_px: Vec<f32> = col_max_len.iter()
-                    .map(|len| (*len as f32 * 7.0 + 24.0).max(48.0))
+                    .map(|len| (*len as f32 * 7.5 + 24.0).clamp(48.0, 300.0))
                     .collect();
+                let total_table_w: f32 = col_px.iter().sum::<f32>() + 2.0;
+
+                // Extract block index from id_prefix (e.g. "b5") for scroll state
+                let block_idx: usize = id_prefix.trim_start_matches('b')
+                    .split('-').next().unwrap_or("0")
+                    .parse().unwrap_or(0);
+                let scroll_x = self.table_scroll_x.get(&block_idx).copied().unwrap_or(0.0);
+                self.table_widths.insert(block_idx, total_table_w);
 
                 let mut table = div()
                     .flex()
                     .flex_col()
-                    .w_full()
+                    .w(px(total_table_w))
+                    .flex_shrink_0()
                     .border_1()
                     .border_color(theme::surface1())
                     .rounded(px(4.))
-                    .overflow_hidden();
+                    .ml(px(-scroll_x));
 
                 for (row_idx, row) in rows.iter().enumerate() {
                     let is_header = row_idx == 0;
-                    let mut row_div = div().flex().flex_row().w_full();
+                    let mut row_div = div().flex().flex_row();
                     if is_header {
                         row_div = row_div.bg(theme::surface0());
                     }
@@ -1369,36 +1470,102 @@ impl MarkdownPreviewView {
                     for col_idx in 0..col_count {
                         let cell_inlines = row.get(col_idx).cloned().unwrap_or_default();
                         let spans = flatten_inlines(&cell_inlines, is_header, false, false);
-                        let word_divs = render_inline_spans(&spans);
+                        let (text, highlights, _links) = build_styled_text(&spans);
+                        let styled = StyledText::new(text).with_highlights(highlights);
 
                         let mut cell = div()
-                            .flex()
-                            .flex_row()
-                            .flex_wrap()
-                            .items_baseline()
+                            .w(px(col_px.get(col_idx).copied().unwrap_or(100.0)))
+                            .flex_shrink_0()
                             .px(px(12.))
                             .py(px(6.))
                             .text_sm()
                             .text_color(theme::text());
 
-                        if col_idx == flex_col {
-                            cell = cell.flex_1().min_w(px(0.));
-                        } else {
-                            cell = cell.w(px(col_px[col_idx])).flex_shrink_0();
-                        }
                         if col_idx > 0 {
                             cell = cell.border_l_1().border_color(theme::surface1());
                         }
-                        for d in word_divs {
-                            cell = cell.child(d);
-                        }
+                        cell = cell.child(styled);
                         row_div = row_div.child(cell);
                     }
 
                     table = table.child(row_div);
                 }
 
-                table
+                // Available content width for table clipping
+                let viewport_w: f32 = {
+                    let w: f32 = self.scroll_handle.bounds().size.width.into();
+                    if w > 0.0 { (w - 64.0).max(200.0) } else { 736.0 }
+                };
+                let max_scroll_x = (total_table_w - viewport_w).max(0.0);
+                let has_h_scroll = max_scroll_x > 0.0;
+
+                let table_eid = ElementId::Name(format!("table-{}", block_idx).into());
+                let mut table_wrapper = div()
+                    .id(table_eid)
+                    .w_full()
+                    .overflow_x_hidden();
+
+                if has_h_scroll {
+                    table_wrapper = table_wrapper.on_scroll_wheel(
+                        cx.listener(move |this, ev: &ScrollWheelEvent, _window, cx| {
+                            let (dx, dy): (f32, f32) = match &ev.delta {
+                                ScrollDelta::Lines(d) => (d.x * 20.0, d.y * 20.0),
+                                ScrollDelta::Pixels(d) => {
+                                    let x: f32 = d.x.into();
+                                    let y: f32 = d.y.into();
+                                    (x, y)
+                                }
+                            };
+                            if dx.abs() > dy.abs() * 3.0 {
+                                let tw = this.table_widths.get(&block_idx).copied().unwrap_or(0.0);
+                                let vw: f32 = {
+                                    let w: f32 = this.scroll_handle.bounds().size.width.into();
+                                    if w > 0.0 { (w - 64.0).max(200.0) } else { 736.0 }
+                                };
+                                let max = (tw - vw).max(0.0);
+                                let cur = this.table_scroll_x.get(&block_idx).copied().unwrap_or(0.0);
+                                this.table_scroll_x.insert(block_idx, (cur - dx).clamp(0.0, max));
+                                cx.stop_propagation();
+                                cx.notify();
+                            }
+                        })
+                    );
+                }
+
+                table_wrapper = table_wrapper.child(table);
+
+                // Horizontal scrollbar rail for wide tables
+                if has_h_scroll {
+                    let ratio = viewport_w / total_table_w;
+                    let thumb_w = (ratio * viewport_w).max(30.0);
+                    let track_space = viewport_w - thumb_w;
+                    let thumb_x = if max_scroll_x > 0.0 {
+                        scroll_x / max_scroll_x * track_space
+                    } else {
+                        0.0
+                    };
+                    table_wrapper = table_wrapper.child(
+                        div()
+                            .w_full()
+                            .h(px(4.))
+                            .mt(px(4.))
+                            .rounded(px(2.))
+                            .bg(theme::surface0())
+                            .relative()
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left(px(thumb_x))
+                                    .top_0()
+                                    .w(px(thumb_w))
+                                    .h_full()
+                                    .rounded(px(2.))
+                                    .bg(theme::overlay())
+                            )
+                    );
+                }
+
+                div().w_full().child(table_wrapper)
             }
         }
     }
@@ -1411,6 +1578,9 @@ impl Render for MarkdownPreviewView {
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll_handle)
+            .on_scroll_wheel(cx.listener(|_this, _ev: &ScrollWheelEvent, _window, cx| {
+                cx.notify();
+            }))
             .bg(theme::base())
             .font_family("SF Pro Display, Helvetica Neue, sans-serif")
             .child(self.render_blocks(cx))
