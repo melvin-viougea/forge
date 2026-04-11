@@ -453,24 +453,30 @@ fn render_change_entry(
         .cursor_pointer()
         .hover(|d| d.bg(colors::surface0()))
         // Status icon
-        .child(div().w(px(18.)).text_color(color).child(label))
-        // Filename (never truncated)
-        .child(
-            div()
-                .flex_shrink_0()
-                .text_color(colors::text())
-                .font_weight(FontWeight::MEDIUM)
-                .child(format!("{} ", filename)),
-        )
-        // Directory path (left-truncated with ...)
+        .child(div().flex_shrink_0().w(px(18.)).text_color(color).child(label))
+        // Filename + directory (truncated with ellipsis)
         .child(
             div()
                 .flex_1()
                 .min_w(px(0.))
                 .truncate()
-                .text_xs()
-                .text_color(colors::overlay())
-                .child(dir_display),
+                .flex()
+                .flex_row()
+                .items_center()
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .text_color(colors::text())
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(format!("{} ", filename)),
+                )
+                .child(
+                    div()
+                        .truncate()
+                        .text_xs()
+                        .text_color(colors::overlay())
+                        .child(dir_display),
+                ),
         )
         // +/- stats — always right-aligned
         .child(

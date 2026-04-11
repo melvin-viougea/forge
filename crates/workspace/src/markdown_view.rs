@@ -543,7 +543,7 @@ fn flatten_inlines(inlines: &[MdInline], bold: bool, italic: bool, strike: bool)
             MdInline::Code(text) => {
                 spans.push(InlineSpan {
                     text: text.clone(),
-                    color: Some(theme::peach()),
+                    color: Some(theme::text()),
                     weight: None,
                     monospace: true,
                     strikethrough: strike,
@@ -592,7 +592,7 @@ fn build_styled_text(spans: &[InlineSpan]) -> (String, Vec<(Range<usize>, Highli
             has_style = true;
         }
         if span.monospace {
-            hl.background_color = Some(Hsla::from(theme::surface0()));
+            hl.background_color = Some(Hsla::from(gpui::rgba(0xffffff10)));
             has_style = true;
         }
         if span.strikethrough {
@@ -1136,6 +1136,8 @@ pub struct MarkdownPreviewView {
     // Auto-scroll during selection drag
     auto_scroll_speed: f32,
     auto_scroll_task: Option<Task<()>>,
+    // Copy feedback: block_idx → true while showing "Copied!"
+    copied_blocks: std::collections::HashMap<usize, bool>,
 }
 
 impl MarkdownPreviewView {
@@ -1162,6 +1164,7 @@ impl MarkdownPreviewView {
             hover_char: Rc::new(Cell::new(None)),
             auto_scroll_speed: 0.0,
             auto_scroll_task: None,
+            copied_blocks: std::collections::HashMap::new(),
         }
     }
 
@@ -1280,6 +1283,16 @@ impl MarkdownPreviewView {
         result
     }
 
+    fn schedule_copy_reset(&mut self, block_idx: usize, cx: &mut Context<Self>) {
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            cx.background_executor().timer(Duration::from_secs(2)).await;
+            let _ = this.update(cx, |this, cx| {
+                this.copied_blocks.remove(&block_idx);
+                cx.notify();
+            });
+        }).detach();
+    }
+
     fn start_auto_scroll(&mut self, cx: &mut Context<Self>) {
         if self.auto_scroll_task.is_some() {
             return;
@@ -1394,8 +1407,11 @@ impl MarkdownPreviewView {
             .flex_col()
             .flex_shrink_0()
             .w(px(container_w))
-            .p(px(32.))
-            .gap(px(4.));
+            .px(px(48.))
+            .py(px(40.))
+            .gap(px(14.))
+            .text_size(px(15.))
+            .line_height(px(24.));
 
         if top_spacer_h > 0.0 {
             container = container.child(div().h(px(top_spacer_h)).flex_shrink_0());
@@ -1417,11 +1433,11 @@ impl MarkdownPreviewView {
         match block {
             MdBlock::Heading(level, inlines) => {
                 let (size, weight) = match level {
-                    1 => (px(28.), FontWeight::BOLD),
-                    2 => (px(22.), FontWeight::BOLD),
-                    3 => (px(18.), FontWeight::SEMIBOLD),
-                    4 => (px(16.), FontWeight::SEMIBOLD),
-                    _ => (px(14.), FontWeight::SEMIBOLD),
+                    1 => (px(32.), FontWeight::BOLD),
+                    2 => (px(24.), FontWeight::BOLD),
+                    3 => (px(20.), FontWeight::SEMIBOLD),
+                    4 => (px(17.), FontWeight::SEMIBOLD),
+                    _ => (px(15.), FontWeight::SEMIBOLD),
                 };
                 let spans = flatten_inlines(inlines, false, false, false);
                 let (text, mut highlights, links) = build_styled_text(&spans);
@@ -1435,18 +1451,24 @@ impl MarkdownPreviewView {
                 let highlights = merge_highlights(&text, highlights);
                 let styled = StyledText::new(text.clone()).with_highlights(highlights);
 
+                let top_margin = match level {
+                    1 => px(8.),
+                    2 => px(24.),
+                    3 => px(16.),
+                    _ => px(12.),
+                };
                 let mut heading = div()
                     .w_full()
                     .text_size(size)
                     .font_weight(weight)
                     .text_color(theme::text())
-                    .mt(px(12.))
-                    .pb(px(4.));
+                    .mt(top_margin)
+                    .pb(px(8.));
                 if *level <= 2 {
                     heading = heading
                         .border_b_1()
                         .border_color(theme::surface1())
-                        .pb(px(8.));
+                        .pb(px(12.));
                 }
 
                 let link_ranges: Vec<Range<usize>> = links.iter().map(|(r, _)| r.clone()).collect();
@@ -1474,8 +1496,8 @@ impl MarkdownPreviewView {
 
                 div()
                     .w_full()
-                    .text_color(theme::text())
-                    .line_height(px(24.))
+                    .text_color(theme::subtext())
+                    .line_height(px(26.))
                     .child(self.make_interactive(id, styled, block_idx, 0, link_ranges, link_urls))
             }
 
@@ -1485,9 +1507,10 @@ impl MarkdownPreviewView {
                     .flex_col()
                     .w_full()
                     .bg(theme::surface0())
-                    .rounded(px(6.))
+                    .rounded(px(8.))
                     .border_1()
-                    .border_color(theme::surface1());
+                    .border_color(theme::surface1())
+                    .my(px(8.));
 
                 // Language label + copy button
                 let code_for_copy = code.clone();
@@ -1509,21 +1532,29 @@ impl MarkdownPreviewView {
                     header = header.child(div());
                 }
 
-                header = header.child(
-                    div()
-                        .id(ElementId::Name(format!("{}-copy", id_prefix).into()))
-                        .cursor(CursorStyle::PointingHand)
-                        .px(px(6.))
-                        .py(px(2.))
-                        .rounded(px(3.))
-                        .text_xs()
-                        .text_color(theme::subtext())
-                        .hover(|d| d.bg(theme::surface1()).text_color(theme::text()))
-                        .on_click(cx.listener(move |_this, _ev: &ClickEvent, _window, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(code_for_copy.clone()));
-                        }))
-                        .child("Copy")
-                );
+                let is_copied = self.copied_blocks.get(&block_idx).copied().unwrap_or(false);
+                let copy_label = if is_copied { "Copied!" } else { "Copy" };
+                let copy_color = if is_copied { theme::green() } else { theme::subtext() };
+                let mut copy_btn = div()
+                    .id(ElementId::Name(format!("{}-copy", id_prefix).into()))
+                    .cursor(CursorStyle::PointingHand)
+                    .px(px(6.))
+                    .py(px(2.))
+                    .rounded(px(3.))
+                    .text_xs()
+                    .text_color(copy_color);
+                if !is_copied {
+                    copy_btn = copy_btn.hover(|d| d.bg(theme::surface1()).text_color(theme::text()));
+                }
+                copy_btn = copy_btn
+                    .on_click(cx.listener(move |this, _ev: &ClickEvent, _window, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(code_for_copy.clone()));
+                        this.copied_blocks.insert(block_idx, true);
+                        this.schedule_copy_reset(block_idx, cx);
+                        cx.notify();
+                    }))
+                    .child(copy_label);
+                header = header.child(copy_btn);
                 block_div = block_div.child(header);
 
                 let highlighted = highlight_code(lang, code);
@@ -1570,7 +1601,7 @@ impl MarkdownPreviewView {
             }
 
             MdBlock::UnorderedList(items) => {
-                let mut list = div().flex().flex_col().pl(px(16.)).gap(px(2.));
+                let mut list = div().flex().flex_col().pl(px(20.)).gap(px(6.));
                 for (ii, item) in items.iter().enumerate() {
                     let item_id = format!("{}-ul{}", id_prefix, ii);
                     let spans = flatten_inlines(&item.content, false, false, false);
@@ -1594,7 +1625,7 @@ impl MarkdownPreviewView {
                     let link_ranges: Vec<Range<usize>> = links.iter().map(|(r, _)| r.clone()).collect();
                     let link_urls: Vec<String> = links.iter().map(|(_, u)| u.clone()).collect();
                     let id = ElementId::Name(format!("{}-text", item_id).into());
-                    let content_div = div().flex_1().min_w(px(0.)).text_color(theme::text())
+                    let content_div = div().flex_1().min_w(px(0.)).text_color(theme::subtext()).line_height(px(26.))
                         .child(self.make_interactive(id, styled, block_idx, ii, link_ranges, link_urls));
 
                     let row = div().flex().flex_row().items_start()
@@ -1617,7 +1648,7 @@ impl MarkdownPreviewView {
             }
 
             MdBlock::OrderedList(items) => {
-                let mut list = div().flex().flex_col().pl(px(16.)).gap(px(2.));
+                let mut list = div().flex().flex_col().pl(px(20.)).gap(px(6.));
                 for (i, item) in items.iter().enumerate() {
                     let item_id = format!("{}-ol{}", id_prefix, i);
                     let spans = flatten_inlines(&item.content, false, false, false);
@@ -1641,7 +1672,7 @@ impl MarkdownPreviewView {
                     let link_ranges: Vec<Range<usize>> = links.iter().map(|(r, _)| r.clone()).collect();
                     let link_urls: Vec<String> = links.iter().map(|(_, u)| u.clone()).collect();
                     let id = ElementId::Name(format!("{}-text", item_id).into());
-                    let content_div = div().flex_1().min_w(px(0.)).text_color(theme::text())
+                    let content_div = div().flex_1().min_w(px(0.)).text_color(theme::subtext()).line_height(px(26.))
                         .child(self.make_interactive(id, styled, block_idx, i, link_ranges, link_urls));
 
                     let row = div().flex().flex_row().items_start()
@@ -1667,7 +1698,7 @@ impl MarkdownPreviewView {
                 div()
                     .w_full()
                     .h(px(1.))
-                    .my(px(12.))
+                    .my(px(16.))
                     .bg(theme::surface1())
             }
 
@@ -1675,11 +1706,11 @@ impl MarkdownPreviewView {
                 let mut quote = div()
                     .flex()
                     .flex_col()
-                    .pl(px(16.))
-                    .py(px(4.))
-                    .gap(px(4.))
+                    .pl(px(20.))
+                    .py(px(8.))
+                    .gap(px(6.))
                     .border_l_2()
-                    .border_color(theme::blue())
+                    .border_color(theme::overlay())
                     .text_color(theme::subtext());
 
                 let blocks = inner_blocks.clone();
@@ -1711,7 +1742,21 @@ impl MarkdownPreviewView {
                 let col_px: Vec<f32> = col_max_len.iter()
                     .map(|len| (*len as f32 * 7.5 + 24.0).clamp(48.0, 300.0))
                     .collect();
-                let total_table_w: f32 = col_px.iter().sum::<f32>() + 2.0;
+                let content_table_w: f32 = col_px.iter().sum::<f32>() + 2.0;
+
+                // Stretch columns to fill available width when table is narrower
+                let available_w: f32 = {
+                    let w: f32 = self.scroll_handle.bounds().size.width.into();
+                    if w > 0.0 { (w - 96.0).max(200.0) } else { 704.0 }
+                };
+                let (col_px, total_table_w) = if content_table_w < available_w && col_count > 0 {
+                    let extra = available_w - content_table_w;
+                    let extra_per_col = extra / col_count as f32;
+                    let stretched: Vec<f32> = col_px.iter().map(|w| w + extra_per_col).collect();
+                    (stretched, available_w)
+                } else {
+                    (col_px, content_table_w)
+                };
 
                 // Extract block index from id_prefix (e.g. "b5") for scroll state
                 let block_idx: usize = id_prefix.trim_start_matches('b')
@@ -1727,14 +1772,15 @@ impl MarkdownPreviewView {
                     .flex_shrink_0()
                     .border_1()
                     .border_color(theme::surface1())
-                    .rounded(px(4.))
+                    .rounded(px(6.))
+                    .my(px(8.))
                     .ml(px(-scroll_x));
 
                 for (row_idx, row) in rows.iter().enumerate() {
                     let is_header = row_idx == 0;
                     let mut row_div = div().flex().flex_row();
-                    if is_header {
-                        row_div = row_div.bg(theme::surface0());
+                    if !is_header && row_idx % 2 == 1 {
+                        row_div = row_div.bg(gpui::rgba(0xffffff08));
                     }
                     if row_idx > 0 {
                         row_div = row_div.border_t_1().border_color(theme::surface1());
@@ -1762,10 +1808,10 @@ impl MarkdownPreviewView {
                         let mut cell = div()
                             .w(px(col_px.get(col_idx).copied().unwrap_or(100.0)))
                             .flex_shrink_0()
-                            .px(px(12.))
-                            .py(px(6.))
+                            .px(px(14.))
+                            .py(px(8.))
                             .text_sm()
-                            .text_color(theme::text());
+                            .text_color(theme::subtext());
 
                         if col_idx > 0 {
                             cell = cell.border_l_1().border_color(theme::surface1());
