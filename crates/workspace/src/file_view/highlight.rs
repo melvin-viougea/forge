@@ -1,16 +1,18 @@
 /// Hand-written syntax tokenizer — no regex dependency.
 
 use crate::theme;
-use gpui::Rgba;
+use gpui::{rgb, Rgba};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TokenKind {
-    Keyword,
+    Keyword,              // control flow: if, else, return, for, while… → lavender #C586C0
+    KeywordDeclaration,   // storage/declaration: const, let, fn, import, export… → blue #569CD6
     String,
     Comment,
     Number,
     Type,
     Function,
+    Variable,             // parameter/variable names → light blue #9CDCFE
     Operator,
     Punctuation,
     Plain,
@@ -23,23 +25,30 @@ pub struct Token {
     pub kind: TokenKind,
 }
 
+/// VS Code Dark Modern / Dark+ exact token colors
 pub fn token_color(kind: TokenKind) -> Rgba {
-    // VS Code Dark+ inspired color mapping
     match kind {
-        TokenKind::Keyword => theme::lavender(),    // purple/pink — control flow keywords
-        TokenKind::String => theme::peach(),        // orange/salmon — string literals
-        TokenKind::Comment => theme::green(),       // green — comments
-        TokenKind::Number => theme::green(),        // light green — number literals
-        TokenKind::Type => theme::teal(),           // teal/cyan — types, classes
-        TokenKind::Function => theme::yellow(),     // yellow — function names
-        TokenKind::Operator => theme::text(),       // light gray — operators
-        TokenKind::Punctuation => theme::subtext(), // gray — brackets, semicolons
-        TokenKind::Plain => theme::text(),          // default text
+        TokenKind::Keyword => theme::lavender(),              // #C586C0 — control flow: if, else, return…
+        TokenKind::KeywordDeclaration => theme::blue(),       // #569CD6 — storage/declaration: const, fn, import…
+        TokenKind::String => theme::peach(),                  // #CE9178 — string literals
+        TokenKind::Comment => theme::green(),                 // #6A9955 — comments
+        TokenKind::Number => rgb(0xb5cea8),                   // #B5CEA8 — number literals
+        TokenKind::Type => theme::teal(),                     // #4EC9B0 — types, classes
+        TokenKind::Function => theme::yellow(),               // #DCDCAA — function names
+        TokenKind::Variable => rgb(0x9cdcfe),                 // #9CDCFE — variables, parameters
+        TokenKind::Operator => theme::text(),                 // default — operators
+        TokenKind::Punctuation => theme::text(),              // default — brackets, semicolons
+        TokenKind::Plain => theme::text(),                    // default text
     }
 }
 
 pub struct LangDef {
+    /// Control-flow keywords → lavender (#C586C0): if, else, return, for, while…
     pub keywords: &'static [&'static str],
+    /// Storage/declaration keywords → blue (#569CD6): const, let, fn, import, class…
+    pub keywords_decl: &'static [&'static str],
+    /// Built-in type names (lowercase) → teal (#4EC9B0): string, number, boolean…
+    pub builtin_types: &'static [&'static str],
     pub line_comment: &'static str,
     pub block_comment: Option<(&'static str, &'static str)>,
     pub string_delims: &'static [char],
@@ -191,21 +200,29 @@ pub fn tokenize_line(line: &str, lang: &LangDef, in_block_comment: bool) -> (Vec
             // Macro calls in Rust (word!)
             let is_macro = i < len && bytes[i] == b'!';
 
-            let kind = if lang.keywords.contains(&word) {
-                TokenKind::Keyword
-            } else if is_macro {
-                TokenKind::Function
-            } else if word.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
-                TokenKind::Type
-            } else {
-                // Check if followed by (  → function call
+            // Check if followed by (  → function call
+            let followed_by_paren = {
                 let mut j = i;
                 while j < len && bytes[j].is_ascii_whitespace() { j += 1; }
-                if j < len && bytes[j] == b'(' {
-                    TokenKind::Function
-                } else {
-                    TokenKind::Plain
-                }
+                j < len && bytes[j] == b'('
+            };
+
+            // Check if preceded by < or </ → JSX/HTML tag name
+            let is_tag_name = (start > 0 && bytes[start - 1] == b'<')
+                || (start > 1 && bytes[start - 1] == b'/' && bytes[start - 2] == b'<');
+
+            let kind = if lang.keywords_decl.contains(&word) {
+                TokenKind::KeywordDeclaration
+            } else if lang.keywords.contains(&word) {
+                TokenKind::Keyword
+            } else if lang.builtin_types.contains(&word) {
+                TokenKind::Type
+            } else if is_macro || followed_by_paren {
+                TokenKind::Function
+            } else if is_tag_name {
+                TokenKind::Type
+            } else {
+                TokenKind::Variable
             };
             tokens.push(Token { start, end: i, kind });
             continue;
@@ -222,7 +239,12 @@ pub fn tokenize_line(line: &str, lang: &LangDef, in_block_comment: bool) -> (Vec
                     i += 1;
                     if i - start > 3 { break; }
                 }
-                TokenKind::Operator
+                // Arrow => is yellow in VS Code Dark+
+                if &line[start..i] == "=>" {
+                    TokenKind::Function
+                } else {
+                    TokenKind::Operator
+                }
             }
             b'{' | b'}' | b'(' | b')' | b'[' | b']' | b';' | b',' | b'.' | b':' | b'?' | b'@' | b'#' => {
                 TokenKind::Punctuation
@@ -239,10 +261,17 @@ pub fn tokenize_line(line: &str, lang: &LangDef, in_block_comment: bool) -> (Vec
 
 static RUST: LangDef = LangDef {
     keywords: &[
-        "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum",
-        "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod",
-        "move", "mut", "pub", "ref", "return", "self", "Self", "static", "struct", "super",
-        "trait", "true", "type", "unsafe", "use", "where", "while", "yield",
+        "as", "await", "break", "continue", "else", "for", "if", "in", "loop",
+        "match", "move", "return", "where", "while", "yield", "unsafe",
+    ],
+    keywords_decl: &[
+        "async", "const", "crate", "dyn", "enum", "extern", "false", "fn", "impl", "let", "mod",
+        "mut", "pub", "ref", "self", "Self", "static", "struct", "super", "trait", "true",
+        "type", "use",
+    ],
+    builtin_types: &[
+        "bool", "char", "str", "i8", "i16", "i32", "i64", "i128", "isize",
+        "u8", "u16", "u32", "u64", "u128", "usize", "f32", "f64",
     ],
     line_comment: "//",
     block_comment: Some(("/*", "*/")),
@@ -251,12 +280,16 @@ static RUST: LangDef = LangDef {
 
 static JAVASCRIPT: LangDef = LangDef {
     keywords: &[
-        "async", "await", "break", "case", "catch", "class", "const", "continue", "debugger",
-        "default", "delete", "do", "else", "export", "extends", "false", "finally", "for",
-        "from", "function", "if", "import", "in", "instanceof", "let", "new", "null", "of",
-        "return", "super", "switch", "this", "throw", "true", "try", "typeof", "undefined",
-        "var", "void", "while", "with", "yield",
+        "await", "break", "case", "catch", "continue", "default", "do", "else", "export",
+        "finally", "for", "from", "if", "import", "return", "switch", "throw", "try",
+        "while", "with", "yield",
     ],
+    keywords_decl: &[
+        "async", "class", "const", "debugger", "delete", "extends", "false", "function",
+        "in", "instanceof", "let", "new", "null", "of", "super", "this", "true", "typeof",
+        "undefined", "var", "void",
+    ],
+    builtin_types: &[],
     line_comment: "//",
     block_comment: Some(("/*", "*/")),
     string_delims: &['"', '\'', '`'],
@@ -264,13 +297,19 @@ static JAVASCRIPT: LangDef = LangDef {
 
 static TYPESCRIPT: LangDef = LangDef {
     keywords: &[
-        "abstract", "as", "async", "await", "break", "case", "catch", "class", "const",
-        "continue", "debugger", "declare", "default", "delete", "do", "else", "enum", "export",
-        "extends", "false", "finally", "for", "from", "function", "if", "implements", "import",
-        "in", "instanceof", "interface", "is", "keyof", "let", "module", "namespace", "new",
-        "null", "of", "private", "protected", "public", "readonly", "return", "static", "super",
-        "switch", "this", "throw", "true", "try", "type", "typeof", "undefined", "var", "void",
+        "await", "break", "case", "catch", "continue", "default", "do", "else", "export",
+        "finally", "for", "from", "if", "import", "return", "switch", "throw", "try",
         "while", "with", "yield",
+    ],
+    keywords_decl: &[
+        "abstract", "as", "async", "class", "const", "debugger", "declare", "delete", "enum",
+        "extends", "false", "function", "implements", "in", "instanceof", "interface", "is",
+        "keyof", "let", "module", "namespace", "new", "null", "of", "private", "protected",
+        "public", "readonly", "static", "super", "this", "true", "type", "typeof",
+        "undefined", "var", "void",
+    ],
+    builtin_types: &[
+        "string", "number", "boolean", "any", "never", "object", "symbol", "bigint", "unknown",
     ],
     line_comment: "//",
     block_comment: Some(("/*", "*/")),
@@ -279,10 +318,15 @@ static TYPESCRIPT: LangDef = LangDef {
 
 static PYTHON: LangDef = LangDef {
     keywords: &[
-        "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class",
-        "continue", "def", "del", "elif", "else", "except", "finally", "for", "from", "global",
-        "if", "import", "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise",
-        "return", "try", "while", "with", "yield",
+        "and", "as", "assert", "await", "break", "continue", "del", "elif", "else",
+        "except", "finally", "for", "from", "if", "import", "lambda", "not", "or", "pass",
+        "raise", "return", "try", "while", "with", "yield",
+    ],
+    keywords_decl: &[
+        "async", "False", "None", "True", "class", "def", "global", "in", "is", "nonlocal",
+    ],
+    builtin_types: &[
+        "int", "float", "str", "bool", "list", "dict", "tuple", "set", "bytes",
     ],
     line_comment: "#",
     block_comment: None,
@@ -291,9 +335,17 @@ static PYTHON: LangDef = LangDef {
 
 static GO: LangDef = LangDef {
     keywords: &[
-        "break", "case", "chan", "const", "continue", "default", "defer", "else", "fallthrough",
-        "for", "func", "go", "goto", "if", "import", "interface", "map", "package", "range",
-        "return", "select", "struct", "switch", "type", "var", "true", "false", "nil",
+        "break", "case", "continue", "default", "defer", "else", "fallthrough", "for", "go",
+        "goto", "if", "range", "return", "select", "switch",
+    ],
+    keywords_decl: &[
+        "chan", "const", "false", "func", "import", "interface", "map", "nil", "package",
+        "struct", "true", "type", "var",
+    ],
+    builtin_types: &[
+        "bool", "byte", "complex64", "complex128", "error", "float32", "float64",
+        "int", "int8", "int16", "int32", "int64", "rune", "string",
+        "uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
     ],
     line_comment: "//",
     block_comment: Some(("/*", "*/")),
@@ -302,11 +354,15 @@ static GO: LangDef = LangDef {
 
 static C_LANG: LangDef = LangDef {
     keywords: &[
-        "auto", "break", "case", "char", "const", "continue", "default", "do", "double",
-        "else", "enum", "extern", "float", "for", "goto", "if", "int", "long", "register",
-        "return", "short", "signed", "sizeof", "static", "struct", "switch", "typedef",
-        "union", "unsigned", "void", "volatile", "while", "NULL", "true", "false",
+        "break", "case", "continue", "default", "do", "else", "for", "goto", "if", "return",
+        "sizeof", "switch", "while",
     ],
+    keywords_decl: &[
+        "auto", "char", "const", "double", "enum", "extern", "false", "float", "int", "long",
+        "NULL", "register", "short", "signed", "static", "struct", "true", "typedef", "union",
+        "unsigned", "void", "volatile",
+    ],
+    builtin_types: &[],
     line_comment: "//",
     block_comment: Some(("/*", "*/")),
     string_delims: &['"', '\''],
@@ -314,15 +370,18 @@ static C_LANG: LangDef = LangDef {
 
 static CPP: LangDef = LangDef {
     keywords: &[
-        "alignas", "alignof", "and", "auto", "bool", "break", "case", "catch", "char", "class",
-        "const", "constexpr", "continue", "decltype", "default", "delete", "do", "double",
-        "else", "enum", "explicit", "export", "extern", "false", "float", "for", "friend",
-        "goto", "if", "inline", "int", "long", "mutable", "namespace", "new", "noexcept",
-        "nullptr", "operator", "or", "private", "protected", "public", "register", "return",
-        "short", "signed", "sizeof", "static", "struct", "switch", "template", "this", "throw",
-        "true", "try", "typedef", "typeid", "typename", "union", "unsigned", "using", "virtual",
-        "void", "volatile", "while",
+        "and", "break", "case", "catch", "continue", "default", "delete", "do", "else", "for",
+        "goto", "if", "new", "noexcept", "operator", "or", "return", "sizeof", "switch", "this",
+        "throw", "try", "while",
     ],
+    keywords_decl: &[
+        "alignas", "alignof", "auto", "bool", "char", "class", "const", "constexpr", "decltype",
+        "double", "enum", "explicit", "export", "extern", "false", "float", "friend", "inline",
+        "int", "long", "mutable", "namespace", "nullptr", "private", "protected", "public",
+        "register", "short", "signed", "static", "struct", "template", "true", "typedef",
+        "typeid", "typename", "union", "unsigned", "using", "virtual", "void", "volatile",
+    ],
+    builtin_types: &[],
     line_comment: "//",
     block_comment: Some(("/*", "*/")),
     string_delims: &['"', '\''],
@@ -330,13 +389,17 @@ static CPP: LangDef = LangDef {
 
 static JAVA: LangDef = LangDef {
     keywords: &[
-        "abstract", "assert", "boolean", "break", "byte", "case", "catch", "char", "class",
-        "const", "continue", "default", "do", "double", "else", "enum", "extends", "false",
-        "final", "finally", "float", "for", "goto", "if", "implements", "import", "instanceof",
-        "int", "interface", "long", "native", "new", "null", "package", "private", "protected",
-        "public", "return", "short", "static", "strictfp", "super", "switch", "synchronized",
-        "this", "throw", "throws", "transient", "true", "try", "void", "volatile", "while",
+        "assert", "break", "case", "catch", "continue", "default", "do", "else", "finally",
+        "for", "goto", "if", "instanceof", "new", "return", "switch", "synchronized", "this",
+        "throw", "throws", "try", "while",
     ],
+    keywords_decl: &[
+        "abstract", "boolean", "byte", "char", "class", "const", "double", "enum", "extends",
+        "false", "final", "float", "implements", "import", "int", "interface", "long", "native",
+        "null", "package", "private", "protected", "public", "short", "static", "strictfp",
+        "super", "transient", "true", "void", "volatile",
+    ],
+    builtin_types: &[],
     line_comment: "//",
     block_comment: Some(("/*", "*/")),
     string_delims: &['"', '\''],
@@ -344,34 +407,44 @@ static JAVA: LangDef = LangDef {
 
 static SWIFT: LangDef = LangDef {
     keywords: &[
-        "associatedtype", "break", "case", "catch", "class", "continue", "default", "defer",
-        "deinit", "do", "else", "enum", "extension", "fallthrough", "false", "fileprivate",
-        "for", "func", "guard", "if", "import", "in", "init", "inout", "internal", "is", "let",
-        "nil", "open", "operator", "private", "protocol", "public", "repeat", "return", "self",
-        "Self", "static", "struct", "subscript", "super", "switch", "throw", "throws", "true",
-        "try", "typealias", "var", "where", "while",
+        "break", "case", "catch", "continue", "default", "defer", "do", "else", "fallthrough",
+        "for", "guard", "if", "in", "is", "repeat", "return", "switch", "throw", "throws",
+        "try", "where", "while",
     ],
+    keywords_decl: &[
+        "associatedtype", "class", "deinit", "enum", "extension", "false", "fileprivate",
+        "func", "import", "init", "inout", "internal", "let", "nil", "open", "operator",
+        "private", "protocol", "public", "self", "Self", "static", "struct", "subscript",
+        "super", "true", "typealias", "var",
+    ],
+    builtin_types: &[],
     line_comment: "//",
     block_comment: Some(("/*", "*/")),
     string_delims: &['"'],
 };
 
 static TOML: LangDef = LangDef {
-    keywords: &["true", "false"],
+    keywords: &[],
+    keywords_decl: &["true", "false"],
+    builtin_types: &[],
     line_comment: "#",
     block_comment: None,
     string_delims: &['"', '\''],
 };
 
 static JSON: LangDef = LangDef {
-    keywords: &["true", "false", "null"],
+    keywords: &[],
+    keywords_decl: &["true", "false", "null"],
+    builtin_types: &[],
     line_comment: "",
     block_comment: None,
     string_delims: &['"'],
 };
 
 static YAML: LangDef = LangDef {
-    keywords: &["true", "false", "null", "yes", "no", "on", "off"],
+    keywords: &[],
+    keywords_decl: &["true", "false", "null", "yes", "no", "on", "off"],
+    builtin_types: &[],
     line_comment: "#",
     block_comment: None,
     string_delims: &['"', '\''],
@@ -380,19 +453,25 @@ static YAML: LangDef = LangDef {
 static SHELL: LangDef = LangDef {
     keywords: &[
         "if", "then", "else", "elif", "fi", "for", "while", "do", "done", "case", "esac",
-        "function", "in", "select", "until", "return", "exit", "break", "continue", "local",
-        "export", "readonly", "declare", "set", "unset", "shift", "source", "true", "false",
+        "in", "select", "until", "return", "exit", "break", "continue",
     ],
+    keywords_decl: &[
+        "function", "local", "export", "readonly", "declare", "set", "unset", "shift", "source",
+        "true", "false",
+    ],
+    builtin_types: &[],
     line_comment: "#",
     block_comment: None,
     string_delims: &['"', '\''],
 };
 
 static CSS: LangDef = LangDef {
-    keywords: &[
+    keywords: &[],
+    keywords_decl: &[
         "important", "inherit", "initial", "unset", "none", "auto", "block", "flex", "grid",
         "inline", "relative", "absolute", "fixed", "sticky", "solid", "dashed", "dotted",
     ],
+    builtin_types: &[],
     line_comment: "",
     block_comment: Some(("/*", "*/")),
     string_delims: &['"', '\''],
@@ -400,6 +479,8 @@ static CSS: LangDef = LangDef {
 
 static HTML: LangDef = LangDef {
     keywords: &[],
+    keywords_decl: &[],
+    builtin_types: &[],
     line_comment: "",
     block_comment: Some(("<!--", "-->")),
     string_delims: &['"', '\''],
@@ -407,6 +488,8 @@ static HTML: LangDef = LangDef {
 
 static MARKDOWN: LangDef = LangDef {
     keywords: &[],
+    keywords_decl: &[],
+    builtin_types: &[],
     line_comment: "",
     block_comment: None,
     string_delims: &[],

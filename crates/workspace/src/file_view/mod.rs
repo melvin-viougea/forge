@@ -70,6 +70,8 @@ pub struct FileView {
     pub line_numbers: Option<Vec<u32>>, // custom line numbers (0 = hidden)
     // Git gutter
     pub git_gutter: HashMap<usize, GitGutterMarker>,
+    // Measured character width (set during render via text system)
+    char_width: f32,
 }
 
 impl FileView {
@@ -142,6 +144,7 @@ impl FileView {
             diff_markers: HashMap::new(),
             line_numbers: None,
             git_gutter: HashMap::new(),
+            char_width: 9.0,
         }
     }
 
@@ -217,6 +220,7 @@ impl FileView {
             diff_markers: HashMap::new(),
             line_numbers: None,
             git_gutter: HashMap::new(),
+            char_width: 9.0,
         }
     }
 
@@ -912,22 +916,36 @@ impl FileView {
 
     // ── Mouse helpers ──────────────────────────────
 
-    fn x_to_col(&self, row: usize, text_x: f32) -> usize {
+    fn x_to_col(&self, row: usize, text_x: f32, window: &Window) -> usize {
         if row >= self.buffer.line_count() {
             return 0;
         }
-        if text_x < 0.0 {
+        let line = self.buffer.line(row);
+        if line.is_empty() || text_x < 0.0 {
             return 0;
         }
-        let char_width = 7.5_f32;
-        let col = (text_x / char_width).round() as usize;
-        col.min(self.buffer.line(row).len())
+        let font = gpui::font("JetBrains Mono");
+        let run = TextRun {
+            len: line.len(),
+            font,
+            color: gpui::black(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let shaped = window.text_system().shape_line(
+            SharedString::from(line.to_string()),
+            px(15.),
+            &[run],
+            None,
+        );
+        shaped.closest_index_for_x(px(text_x))
     }
 
     // ── Scroll to cursor ───────────────────────────
 
     fn scroll_to_cursor(&mut self) {
-        let line_height = 20.0_f32;
+        let line_height = 26.0_f32;
         let padding = 4.0_f32;
         let cursor_y = self.cursor_row as f32 * line_height + padding;
         // Estimate viewport height from scroll_handle bounds, fallback to 600
@@ -1024,13 +1042,19 @@ impl FileView {
             _ => None,
         };
 
+        let num_width = if diff_marker.is_some() {
+            line_num_width + 9.
+        } else {
+            line_num_width + 22.
+        };
+
         let scroll_x = self.scroll_x;
         let mut line_el = div()
             .id(ElementId::Name(format!("line-{}", row).into()))
             .flex()
             .flex_row()
             .w_full()
-            .h(px(20.))
+            .h(px(26.))
             .when_some(diff_bg, |d: Stateful<Div>, bg| d.bg(bg))
             .when(is_cursor_row && !self.readonly, |d| d.bg(theme::surface0()));
 
@@ -1041,10 +1065,11 @@ impl FileView {
                     MouseButton::Left,
                     cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
                         this.focus_handle.focus(window);
-                        let x: f32 = ev.position.x.into();
-                        // Approximate: line_num_width + 12px padding + 4px content padding
-                        let text_x = x - line_num_width - 16.0;
-                        let col = this.x_to_col(row, text_x);
+                        let click_x: f32 = ev.position.x.into();
+                        let container_x: f32 = this.scroll_handle.bounds().origin.x.into();
+                        let local_x = click_x - container_x;
+                        let text_x = local_x - 8.0 + this.scroll_x;
+                        let col = this.x_to_col(row, text_x, window);
                         this.cursor_row = row;
                         this.cursor_col = col;
                         if ev.modifiers.shift {
@@ -1057,11 +1082,14 @@ impl FileView {
                         cx.notify();
                     }),
                 )
-                .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _window, cx| {
+                .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, window, cx| {
                     if this.selecting && ev.pressed_button == Some(MouseButton::Left) {
-                        let x: f32 = ev.position.x.into();
-                        let text_x = x - line_num_width - 16.0;
-                        let col = this.x_to_col(row, text_x);
+                        let click_x: f32 = ev.position.x.into();
+                        let bounds = this.scroll_handle.bounds();
+                        let container_x: f32 = bounds.origin.x.into();
+                        let local_x = click_x - container_x;
+                        let text_x = local_x - 8.0 + this.scroll_x;
+                        let col = this.x_to_col(row, text_x, window);
                         this.cursor_row = row;
                         this.cursor_col = col;
                         this.extend_selection();
@@ -1080,7 +1108,7 @@ impl FileView {
                 Some(DiffLineMarker::Added) => theme::green(),
                 _ => unreachable!(),
             };
-            line_el = line_el.child(div().w(px(3.)).h(px(20.)).flex_shrink_0().mr(px(10.)).bg(marker_color));
+            line_el = line_el.child(div().w(px(3.)).h(px(26.)).flex_shrink_0().mr(px(10.)).bg(marker_color));
         }
 
         // Git gutter marker — shown in normal editor mode (not diff view)
@@ -1094,12 +1122,12 @@ impl FileView {
             match gutter_marker.unwrap() {
                 GitGutterMarker::Added => {
                     line_el = line_el.child(
-                        div().absolute().left(px(-1.)).top_0().w(px(3.)).h(px(20.)).bg(theme::green()),
+                        div().absolute().left(px(-1.)).top_0().w(px(3.)).h(px(26.)).bg(theme::green()),
                     );
                 }
                 GitGutterMarker::Modified => {
                     line_el = line_el.child(
-                        div().absolute().left(px(-1.)).top_0().w(px(3.)).h(px(20.)).bg(theme::blue()),
+                        div().absolute().left(px(-1.)).top_0().w(px(3.)).h(px(26.)).bg(theme::blue()),
                     );
                 }
                 GitGutterMarker::Deleted => {
@@ -1151,11 +1179,6 @@ impl FileView {
                 }
             }
         };
-        let num_width = if diff_marker.is_some() {
-            line_num_width + 9.
-        } else {
-            line_num_width + 22.
-        };
         line_el = line_el.child(
             div()
                 .w(px(num_width))
@@ -1174,7 +1197,7 @@ impl FileView {
                 content_children.push(
                     div()
                         .w(px(2.))
-                        .h(px(16.))
+                        .h(px(22.))
                         .bg(theme::blue())
                         .into_any_element(),
                 );
@@ -1185,13 +1208,14 @@ impl FileView {
             while i < chars.len() {
                 let (byte_idx, _) = chars[i];
 
-                // Cursor
+                // Cursor: zero-layout-impact (negative margin cancels width)
                 if is_cursor_row && byte_idx == cursor_col {
                     content_children.push(
                         div()
                             .w(px(2.))
-                            .h(px(16.))
+                            .h(px(22.))
                             .flex_shrink_0()
+                            .mr(px(-2.))
                             .bg(theme::blue())
                             .into_any_element(),
                     );
@@ -1270,7 +1294,7 @@ impl FileView {
                 content_children.push(
                     div()
                         .w(px(2.))
-                        .h(px(16.))
+                        .h(px(22.))
                         .flex_shrink_0()
                         .bg(theme::blue())
                         .into_any_element(),
@@ -1314,13 +1338,23 @@ impl Focusable for FileView {
 
 impl Render for FileView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Measure actual character width from font metrics
+        let ts = cx.text_system();
+        let font = gpui::font("JetBrains Mono");
+        if let Ok(adv) = ts.advance(ts.resolve_font(&font), px(15.), '0') {
+            let w: f32 = adv.width.into();
+            if w > 0.0 {
+                self.char_width = w;
+            }
+        }
+
         let line_count = self.buffer.line_count();
         let max_line_num = if let Some(ref nums) = self.line_numbers {
             nums.iter().copied().max().unwrap_or(line_count as u32) as usize
         } else {
             line_count
         };
-        let line_num_width = format!("{}", max_line_num).len().max(3) as f32 * 9.0;
+        let line_num_width = format!("{}", max_line_num).len().max(3) as f32 * self.char_width;
         let is_focused = self.focus_handle.is_focused(window);
         let cursor_row = self.cursor_row;
         let cursor_col = self.cursor_col;
@@ -1349,8 +1383,9 @@ impl Render for FileView {
             .flex_col()
             .when(!compact, |d: Div| d.size_full())
             .when(compact, |d: Div| d.w_full())
-            .text_sm()
-            .font_family("Berkeley Mono, SF Mono, Menlo, monospace")
+            .text_size(px(15.))
+            .line_height(px(26.))
+            .font_family("JetBrains Mono, Menlo, monospace")
             .track_focus(&self.focus_handle)
             .on_mouse_up(
                 MouseButton::Left,
@@ -1804,7 +1839,7 @@ impl Render for FileView {
                                 .flex_row()
                                 .items_center()
                                 .flex_1()
-                                .h(px(24.))
+                                .h(px(26.))
                                 .px(px(8.))
                                 .bg(theme::base())
                                 .rounded(px(4.))
@@ -1835,7 +1870,7 @@ impl Render for FileView {
             })
             // Content
             .child({
-                let line_height = 20.0_f32;
+                let line_height = 26.0_f32;
                 let total_lines = self.buffer.line_count();
 
                 if compact {
@@ -1916,7 +1951,7 @@ impl Render for FileView {
                         .flex_row()
                         .items_center()
                         .w_full()
-                        .h(px(22.))
+                        .h(px(26.))
                         .min_h(px(22.))
                         .flex_shrink_0()
                         .px(px(10.))
