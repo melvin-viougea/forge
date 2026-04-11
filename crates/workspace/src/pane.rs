@@ -162,6 +162,10 @@ impl Pane {
         self.tabs.get(self.active_tab).map(|t| t.id)
     }
 
+    pub fn active_tab_index(&self) -> usize {
+        self.active_tab
+    }
+
     pub fn set_tab_notification(&mut self, tab_id: usize, notify: bool) {
         if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
             tab.activity = if notify { TabActivity::Done } else { TabActivity::Idle };

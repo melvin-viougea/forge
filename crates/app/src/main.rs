@@ -913,7 +913,32 @@ impl AppView {
             log_expanded,
         };
 
-        session::save(&paths, active, &layout);
+        // Collect per-project tab data
+        let mut project_tabs = std::collections::HashMap::new();
+        for state in &self.project_states {
+            let pane = state.pane.read(cx);
+            let tabs: Vec<session::SavedTab> = pane.tabs.iter()
+                .filter(|t| {
+                    // Only save file, preview, and image tabs (not terminals/diffs)
+                    let d = &t.detail;
+                    !d.starts_with("diff:") && !d.contains("zsh") && !t.is_claude
+                        && (d.starts_with("preview:") || d.starts_with("image:") || std::path::Path::new(d).extension().is_some())
+                })
+                .map(|t| session::SavedTab { detail: t.detail.clone() })
+                .collect();
+            if !tabs.is_empty() {
+                let active_detail = pane.tabs.get(pane.active_tab_index())
+                    .map(|t| t.detail.clone())
+                    .unwrap_or_default();
+                let active_tab = tabs.iter().position(|t| t.detail == active_detail).unwrap_or(0);
+                project_tabs.insert(
+                    state.path.to_string_lossy().to_string(),
+                    session::SavedProjectTabs { tabs, active_tab },
+                );
+            }
+        }
+
+        session::save(&paths, active, &layout, &project_tabs);
     }
 }
 
@@ -2637,6 +2662,7 @@ fn main() {
                                     panel.active_project = Some(*idx);
                                     cx.notify();
                                 });
+                                this.save_session(cx);
                             }
                             ProjectPanelEvent::ProjectClosed(idx) => {
                                 let idx = *idx;
@@ -3026,6 +3052,51 @@ fn main() {
                                     log.visible_height = log_h - 28.0;
                                 });
                             });
+                        }
+
+                        // Restore per-project tabs — collect data first to avoid borrow conflict
+                        let tab_restore_list: Vec<(Entity<Pane>, Vec<session::SavedTab>, usize)> =
+                            app_view.project_states.iter().filter_map(|state| {
+                                let proj_key = state.path.to_string_lossy().to_string();
+                                saved.project_tabs.get(&proj_key).map(|pt| {
+                                    (state.pane.clone(), pt.tabs.clone(), pt.active_tab)
+                                })
+                            }).collect();
+
+                        for (pane, tabs, active_idx) in tab_restore_list {
+                            for saved_tab in &tabs {
+                                let detail = &saved_tab.detail;
+                                if detail.starts_with("preview:") {
+                                    let file_path = PathBuf::from(&detail["preview:".len()..]);
+                                    if file_path.exists() {
+                                        app_view.open_markdown_preview(&pane, file_path, cx);
+                                    }
+                                } else if detail.starts_with("image:") {
+                                    let file_path = PathBuf::from(&detail["image:".len()..]);
+                                    if file_path.exists() {
+                                        app_view.open_image_preview(&pane, file_path, cx);
+                                    }
+                                } else {
+                                    // Regular file tab
+                                    let file_path = PathBuf::from(detail);
+                                    if file_path.exists() {
+                                        app_view.open_file_editor(pane.clone(), file_path, cx);
+                                    }
+                                }
+                            }
+                            // Set active tab
+                            if active_idx < tabs.len() {
+                                let active_detail = &tabs[active_idx].detail;
+                                let tab_id = pane.read(cx).tabs.iter()
+                                    .find(|t| t.detail == *active_detail)
+                                    .map(|t| t.id);
+                                if let Some(id) = tab_id {
+                                    pane.update(cx, |p, cx| {
+                                        p.set_active_tab(id);
+                                        cx.notify();
+                                    });
+                                }
+                            }
                         }
                     }
 
