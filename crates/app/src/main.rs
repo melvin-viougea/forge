@@ -695,6 +695,7 @@ struct Toast {
     message: String,
     kind: ToastKind,
     percent: Option<u8>,
+    closable: bool,
 }
 
 struct AppView {
@@ -1031,9 +1032,31 @@ impl AppView {
             message: message.to_string(),
             kind,
             percent,
+            closable: false,
         });
         cx.notify();
         id
+    }
+
+    /// Add a persistent, closable notification. If a toast with the same label already exists,
+    /// updates its message in place rather than adding a duplicate.
+    fn add_persistent_notification(&mut self, label: &str, message: &str, cx: &mut Context<Self>) {
+        if let Some(toast) = self.toasts.iter_mut().find(|t| t.label == label && t.closable) {
+            toast.message = message.to_string();
+            cx.notify();
+            return;
+        }
+        let id = self.next_toast_id;
+        self.next_toast_id += 1;
+        self.toasts.push(Toast {
+            id,
+            label: label.to_string(),
+            message: message.to_string(),
+            kind: ToastKind::Progress,
+            percent: None,
+            closable: true,
+        });
+        cx.notify();
     }
 
     fn update_toast(&mut self, id: usize, message: &str, kind: ToastKind, percent: Option<u8>, cx: &mut Context<Self>) {
@@ -2548,7 +2571,7 @@ impl Render for AppView {
                                         )
                                 )
                                 // Close button
-                                .when(toast.kind != ToastKind::Progress, |d: Div| {
+                                .when(toast.kind != ToastKind::Progress || toast.closable, |d: Div| {
                                     d.child(
                                         div()
                                             .id(ElementId::Name(format!("toast-close-{}", toast_id).into()))
@@ -3122,7 +3145,13 @@ fn main() {
                                         } else {
                                             format!("{} commits to pull", behind)
                                         };
-                                        view.add_toast("Pull", &msg, ToastKind::Progress, None, cx);
+                                        view.add_persistent_notification("Pull", &msg, cx);
+                                    }).ok();
+                                } else {
+                                    // No commits to pull — clear any lingering persistent Pull notification
+                                    this.update(cx, |view, cx| {
+                                        view.toasts.retain(|t| !(t.label == "Pull" && t.closable));
+                                        cx.notify();
                                     }).ok();
                                 }
                             }
