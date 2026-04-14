@@ -2644,7 +2644,13 @@ fn main() {
                 }),
                 ..Default::default()
             },
-            |_window: &mut Window, cx: &mut App| {
+            |window: &mut Window, cx: &mut App| {
+                // Quit the whole app when the window is closed (no dock-only mode)
+                window.on_window_should_close(cx, |_window, cx| {
+                    cx.quit();
+                    true
+                });
+
                 let workspace = cx.new(|cx| IdeWorkspace::new(cx));
 
                 // Setup left dock: Project panel
