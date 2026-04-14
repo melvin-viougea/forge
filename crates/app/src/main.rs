@@ -721,6 +721,7 @@ struct AppView {
     crop_preview_bounds: std::rc::Rc<std::cell::Cell<(f32, f32, f32, f32)>>,
     toasts: Vec<Toast>,
     next_toast_id: usize,
+    is_restoring: bool,
     _project_subscription: Subscription,
     _workspace_subscription: Subscription,
     _update_task: Task<()>,
@@ -883,6 +884,9 @@ impl AppView {
     }
 
     fn save_session(&self, cx: &App) {
+        if self.is_restoring {
+            return;
+        }
         // Save paths in display order
         let panel = self.project_panel.read(cx);
         let paths: Vec<PathBuf> = panel.order.iter()
@@ -914,18 +918,36 @@ impl AppView {
             log_expanded,
         };
 
-        // Collect per-project tab data
+        // Collect per-project tab data — persist every tab kind.
         let mut project_tabs = std::collections::HashMap::new();
         for state in &self.project_states {
             let pane = state.pane.read(cx);
             let tabs: Vec<session::SavedTab> = pane.tabs.iter()
-                .filter(|t| {
-                    // Only save file, preview, and image tabs (not terminals/diffs)
+                .filter_map(|t| {
                     let d = &t.detail;
-                    !d.starts_with("diff:") && !d.contains("zsh") && !t.is_claude
-                        && (d.starts_with("preview:") || d.starts_with("image:") || std::path::Path::new(d).extension().is_some())
+                    let kind = if t.is_claude {
+                        "claude"
+                    } else if d.starts_with("preview:") {
+                        "preview"
+                    } else if d.starts_with("image:") {
+                        "image"
+                    } else if d.starts_with("diff:") {
+                        "diff"
+                    } else if d == "changes-review" {
+                        // Transient review view — not worth persisting.
+                        return None;
+                    } else if std::path::Path::new(d).is_absolute() && std::path::Path::new(d).extension().is_some() {
+                        "file"
+                    } else {
+                        // Terminal tabs use a shortened project path as detail.
+                        "terminal"
+                    };
+                    Some(session::SavedTab {
+                        kind: kind.to_string(),
+                        detail: d.clone(),
+                        title: t.title.clone(),
+                    })
                 })
-                .map(|t| session::SavedTab { detail: t.detail.clone() })
                 .collect();
             if !tabs.is_empty() {
                 let active_detail = pane.tabs.get(pane.active_tab_index())
@@ -1219,6 +1241,62 @@ impl AppView {
         cx.notify();
     }
 
+    /// Spawn a new terminal tab in the given pane, wired up with all the
+    /// usual title / bell / activity subscriptions. Returns (tab_id, terminal_view).
+    fn spawn_terminal_tab(
+        &mut self,
+        pane: &Entity<Pane>,
+        project_path: PathBuf,
+        title: String,
+        is_claude: bool,
+        cx: &mut Context<Self>,
+    ) -> (usize, Entity<TerminalView>) {
+        let detail = shorten_path(&project_path);
+        let term_icon = if is_claude { "crates/app/assets/claude.svg" } else { "crates/app/assets/terminal.svg" };
+        let terminal_view = cx.new(|cx| TerminalView::new_in(title.clone(), Some(project_path), cx));
+        let tab_id = pane.update(cx, |p, _cx| {
+            let id = p.add_tab(title, term_icon, detail, AnyView::from(terminal_view.clone()), true);
+            if is_claude { p.set_tab_claude(id, true); }
+            id
+        });
+        let pane_for_title = pane.clone();
+        cx.subscribe(&terminal_view, move |_this: &mut AppView, _tv, event: &TerminalViewEvent, cx| {
+            match event {
+                TerminalViewEvent::TitleChanged(new_title) => {
+                    pane_for_title.update(cx, |pane, cx| {
+                        pane.set_tab_title(tab_id, new_title.clone());
+                        if new_title == "Claude" {
+                            pane.set_tab_icon(tab_id, "crates/app/assets/claude.svg");
+                            pane.set_tab_claude(tab_id, true);
+                        }
+                        cx.notify();
+                    });
+                }
+                TerminalViewEvent::Bell => {
+                    pane_for_title.update(cx, |pane, cx| {
+                        if pane.tab_activity(tab_id) == Some(TabActivity::Active) {
+                            pane.set_tab_activity(tab_id, TabActivity::Done);
+                            cx.notify();
+                        }
+                    });
+                }
+                TerminalViewEvent::ActivityStarted => {
+                    pane_for_title.update(cx, |pane, cx| {
+                        pane.set_tab_activity(tab_id, TabActivity::Active);
+                        cx.notify();
+                    });
+                }
+                TerminalViewEvent::UserInput => {
+                    pane_for_title.update(cx, |pane, cx| {
+                        pane.set_tab_activity(tab_id, TabActivity::Idle);
+                        cx.notify();
+                    });
+                }
+            }
+        }).detach();
+        (tab_id, terminal_view)
+    }
+
     fn open_changes_review(&mut self, pane: &Entity<Pane>, root_path: PathBuf, cx: &mut Context<Self>) {
         let detail = "changes-review".to_string();
 
@@ -1259,10 +1337,10 @@ impl AppView {
     }
 
     fn add_project(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        self.add_project_with_cmd(path, Some("ccc"), cx);
+        self.add_project_with_cmd(path, Some("ccc"), true, cx);
     }
 
-    fn add_project_with_cmd(&mut self, path: PathBuf, auto_cmd: Option<&str>, cx: &mut Context<Self>) {
+    fn add_project_with_cmd(&mut self, path: PathBuf, auto_cmd: Option<&str>, create_default_terminal: bool, cx: &mut Context<Self>) {
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -1282,47 +1360,8 @@ impl AppView {
                     let title = format!("zsh {}", this.terminal_count);
                     if let Some(idx) = this.active_project {
                         let project_path = this.project_states[idx].path.clone();
-                        let detail = shorten_path(&project_path);
-                        let terminal_view = cx.new(|cx| TerminalView::new_in(title.clone(), Some(project_path), cx));
-                        let tab_id = this.project_states[idx].pane.update(cx, |pane, _cx| {
-                            pane.add_tab(title, "crates/app/assets/terminal.svg", detail, AnyView::from(terminal_view.clone()), true)
-                        });
-                        // Subscribe to OSC title changes
-                        let pane_entity = this.project_states[idx].pane.clone();
-                        cx.subscribe(&terminal_view, move |_this: &mut AppView, _tv, event: &TerminalViewEvent, cx| {
-                            match event {
-                                TerminalViewEvent::TitleChanged(new_title) => {
-                                    pane_entity.update(cx, |pane, cx| {
-                                        pane.set_tab_title(tab_id, new_title.clone());
-                                        if new_title == "Claude" {
-                                            pane.set_tab_icon(tab_id, "crates/app/assets/claude.svg");
-                                            pane.set_tab_claude(tab_id, true);
-                                        }
-                                        cx.notify();
-                                    });
-                                }
-                                TerminalViewEvent::Bell => {
-                                    pane_entity.update(cx, |pane, cx| {
-                                        if pane.tab_activity(tab_id) == Some(TabActivity::Active) {
-                                            pane.set_tab_activity(tab_id, TabActivity::Done);
-                                            cx.notify();
-                                        }
-                                    });
-                                }
-                                TerminalViewEvent::ActivityStarted => {
-                                    pane_entity.update(cx, |pane, cx| {
-                                        pane.set_tab_activity(tab_id, TabActivity::Active);
-                                        cx.notify();
-                                    });
-                                }
-                                TerminalViewEvent::UserInput => {
-                                    pane_entity.update(cx, |pane, cx| {
-                                        pane.set_tab_activity(tab_id, TabActivity::Idle);
-                                        cx.notify();
-                                    });
-                                }
-                            }
-                        }).detach();
+                        let pane = this.project_states[idx].pane.clone();
+                        this.spawn_terminal_tab(&pane, project_path, title, false, cx);
                     }
                     cx.notify();
                 }
@@ -1332,67 +1371,25 @@ impl AppView {
             }
         });
 
-        // Open a terminal in this project directory
-        self.terminal_count += 1;
-        let project_path = path.clone();
-        let detail = shorten_path(&project_path);
-        let is_claude = auto_cmd.is_some();
-        let term_title = if is_claude { "Claude".to_string() } else { format!("zsh {}", self.terminal_count) };
-        let term_icon = if is_claude { "crates/app/assets/claude.svg" } else { "crates/app/assets/terminal.svg" };
-        let terminal_view = cx.new(|cx| TerminalView::new_in(term_title.clone(), Some(project_path), cx));
-        let tab_id = pane.update(cx, |p, _cx| {
-            let id = p.add_tab(term_title, term_icon, detail, AnyView::from(terminal_view.clone()), true);
-            if is_claude { p.set_tab_claude(id, true); }
-            id
-        });
-        // Subscribe to OSC title changes
-        let pane_for_title = pane.clone();
-        cx.subscribe(&terminal_view, move |_this: &mut AppView, _tv, event: &TerminalViewEvent, cx| {
-            match event {
-                TerminalViewEvent::TitleChanged(new_title) => {
-                    pane_for_title.update(cx, |pane, cx| {
-                        pane.set_tab_title(tab_id, new_title.clone());
-                        if new_title == "Claude" {
-                            pane.set_tab_icon(tab_id, "crates/app/assets/claude.svg");
-                            pane.set_tab_claude(tab_id, true);
-                        }
-                        cx.notify();
-                    });
-                }
-                TerminalViewEvent::Bell => {
-                    pane_for_title.update(cx, |pane, cx| {
-                        if pane.tab_activity(tab_id) == Some(TabActivity::Active) {
-                            pane.set_tab_activity(tab_id, TabActivity::Done);
-                            cx.notify();
-                        }
-                    });
-                }
-                TerminalViewEvent::ActivityStarted => {
-                    pane_for_title.update(cx, |pane, cx| {
-                        pane.set_tab_activity(tab_id, TabActivity::Active);
-                        cx.notify();
-                    });
-                }
-                TerminalViewEvent::UserInput => {
-                    pane_for_title.update(cx, |pane, cx| {
-                        pane.set_tab_activity(tab_id, TabActivity::Idle);
-                        cx.notify();
-                    });
-                }
-            }
-        }).detach();
+        // Open the default terminal in this project directory (unless caller opted out)
+        if create_default_terminal {
+            self.terminal_count += 1;
+            let is_claude = auto_cmd.is_some();
+            let term_title = if is_claude { "Claude".to_string() } else { format!("zsh {}", self.terminal_count) };
+            let (_tab_id, terminal_view) = self.spawn_terminal_tab(&pane, path.clone(), term_title, is_claude, cx);
 
-        // Auto-run command in the first terminal (e.g. "ccc" for session restore)
-        if let Some(cmd) = auto_cmd {
-            let cmd = cmd.to_string();
-            let tv = terminal_view.clone();
-            cx.spawn(async move |_this: WeakEntity<AppView>, cx: &mut AsyncApp| {
-                cx.background_executor().timer(Duration::from_millis(500)).await;
-                tv.update(cx, |view, _cx| {
-                    view.terminal.write_input(cmd.as_bytes());
-                    view.terminal.write_input(b"\r");
-                }).ok();
-            }).detach();
+            // Auto-run command in the first terminal (e.g. "ccc" for session restore)
+            if let Some(cmd) = auto_cmd {
+                let cmd = cmd.to_string();
+                let tv = terminal_view.clone();
+                cx.spawn(async move |_this: WeakEntity<AppView>, cx: &mut AsyncApp| {
+                    cx.background_executor().timer(Duration::from_millis(500)).await;
+                    tv.update(cx, |view, _cx| {
+                        view.terminal.write_input(cmd.as_bytes());
+                        view.terminal.write_input(b"\r");
+                    }).ok();
+                }).detach();
+            }
         }
 
         // Subscribe to runner events from this project's commit panel
@@ -1558,9 +1555,8 @@ impl AppView {
             cx.notify();
         });
 
-        // Switch to this project
+        // Switch to this project (switch_project saves the session)
         self.switch_project(idx, cx);
-        self.save_session(cx);
     }
 
     fn switch_project(&mut self, idx: usize, cx: &mut Context<Self>) {
@@ -1589,6 +1585,9 @@ impl AppView {
         });
 
         cx.notify();
+
+        // Persist the new active project. Skipped during restore via the is_restoring flag.
+        self.save_session(cx);
     }
 }
 
@@ -2691,7 +2690,6 @@ fn main() {
                                     panel.active_project = Some(*idx);
                                     cx.notify();
                                 });
-                                this.save_session(cx);
                             }
                             ProjectPanelEvent::ProjectClosed(idx) => {
                                 let idx = *idx;
@@ -2719,7 +2717,6 @@ fn main() {
                                     panel.active_project = Some(new_idx);
                                     cx.notify();
                                 });
-                                this.save_session(cx);
                             }
                             ProjectPanelEvent::ProjectReordered => {
                                 this.save_session(cx);
@@ -3039,6 +3036,7 @@ fn main() {
                         crop_preview_bounds: std::rc::Rc::new(std::cell::Cell::new((0.0, 0.0, 0.0, 0.0))),
                         toasts: Vec::new(),
                         next_toast_id: 0,
+                        is_restoring: false,
                         _project_subscription: project_sub,
                         _workspace_subscription: workspace_sub,
                         _update_task: update_task,
@@ -3047,6 +3045,7 @@ fn main() {
 
                     // Restore previous session
                     if let Some(saved) = session::load() {
+                        app_view.is_restoring = true;
                         // Restore layout dimensions
                         let layout = &saved.layout;
                         app_view.workspace.update(cx, |ws, cx| {
@@ -3056,7 +3055,19 @@ fn main() {
                         });
 
                         for path in &saved.projects {
-                            app_view.add_project_with_cmd(path.clone(), Some("ccc"), cx);
+                            // If we have saved tabs for this project, skip the default
+                            // terminal — restoration will recreate every tab including terminals.
+                            let proj_key = path.to_string_lossy().to_string();
+                            let has_saved_tabs = saved.project_tabs
+                                .get(&proj_key)
+                                .map(|pt| !pt.tabs.is_empty())
+                                .unwrap_or(false);
+                            app_view.add_project_with_cmd(
+                                path.clone(),
+                                if has_saved_tabs { None } else { Some("ccc") },
+                                !has_saved_tabs,
+                                cx,
+                            );
                         }
                         if saved.active < app_view.project_states.len() {
                             app_view.switch_project(saved.active, cx);
@@ -3084,32 +3095,54 @@ fn main() {
                         }
 
                         // Restore per-project tabs — collect data first to avoid borrow conflict
-                        let tab_restore_list: Vec<(Entity<Pane>, Vec<session::SavedTab>, usize)> =
+                        let tab_restore_list: Vec<(Entity<Pane>, PathBuf, Vec<session::SavedTab>, usize)> =
                             app_view.project_states.iter().filter_map(|state| {
                                 let proj_key = state.path.to_string_lossy().to_string();
                                 saved.project_tabs.get(&proj_key).map(|pt| {
-                                    (state.pane.clone(), pt.tabs.clone(), pt.active_tab)
+                                    (state.pane.clone(), state.path.clone(), pt.tabs.clone(), pt.active_tab)
                                 })
                             }).collect();
 
-                        for (pane, tabs, active_idx) in tab_restore_list {
+                        for (pane, project_root, tabs, active_idx) in tab_restore_list {
                             for saved_tab in &tabs {
                                 let detail = &saved_tab.detail;
-                                if detail.starts_with("preview:") {
-                                    let file_path = PathBuf::from(&detail["preview:".len()..]);
-                                    if file_path.exists() {
-                                        app_view.open_markdown_preview(&pane, file_path, cx);
+                                match saved_tab.kind.as_str() {
+                                    "preview" => {
+                                        let file_path = PathBuf::from(&detail["preview:".len()..]);
+                                        if file_path.exists() {
+                                            app_view.open_markdown_preview(&pane, file_path, cx);
+                                        }
                                     }
-                                } else if detail.starts_with("image:") {
-                                    let file_path = PathBuf::from(&detail["image:".len()..]);
-                                    if file_path.exists() {
-                                        app_view.open_image_preview(&pane, file_path, cx);
+                                    "image" => {
+                                        let file_path = PathBuf::from(&detail["image:".len()..]);
+                                        if file_path.exists() {
+                                            app_view.open_image_preview(&pane, file_path, cx);
+                                        }
                                     }
-                                } else {
-                                    // Regular file tab
-                                    let file_path = PathBuf::from(detail);
-                                    if file_path.exists() {
-                                        app_view.open_file_editor(pane.clone(), file_path, cx);
+                                    "diff" => {
+                                        let file_path = PathBuf::from(&detail["diff:".len()..]);
+                                        if file_path.exists() {
+                                            app_view.open_diff_in_pane(&pane, &project_root, file_path, cx);
+                                        }
+                                    }
+                                    "terminal" | "claude" => {
+                                        app_view.terminal_count += 1;
+                                        let is_claude = saved_tab.kind == "claude";
+                                        let title = if !saved_tab.title.is_empty() {
+                                            saved_tab.title.clone()
+                                        } else if is_claude {
+                                            "Claude".to_string()
+                                        } else {
+                                            format!("zsh {}", app_view.terminal_count)
+                                        };
+                                        app_view.spawn_terminal_tab(&pane, project_root.clone(), title, is_claude, cx);
+                                    }
+                                    _ => {
+                                        // "file" or legacy untyped — treat as a file path
+                                        let file_path = PathBuf::from(detail);
+                                        if file_path.exists() {
+                                            app_view.open_file_editor(pane.clone(), file_path, cx);
+                                        }
                                     }
                                 }
                             }
@@ -3127,6 +3160,10 @@ fn main() {
                                 }
                             }
                         }
+
+                        // Restore complete — re-enable saves and persist the final state.
+                        app_view.is_restoring = false;
+                        app_view.save_session(cx);
                     }
 
                     // Periodic remote check (every 5 minutes)

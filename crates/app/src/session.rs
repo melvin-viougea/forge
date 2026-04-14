@@ -32,10 +32,16 @@ impl Default for SavedLayout {
     }
 }
 
-/// A saved tab (detail string + whether it was active)
+/// A saved tab. `kind` identifies the tab type ("file", "preview", "image",
+/// "diff", "terminal", "claude"). `detail` is the type-specific identifier
+/// (file path for file/preview/image/diff; project path shorthand for terminals).
+/// `title` preserves the displayed tab title (mainly useful for terminals where
+/// the title may have been customized via OSC sequences).
 #[derive(Clone)]
 pub struct SavedTab {
+    pub kind: String,
     pub detail: String,
+    pub title: String,
 }
 
 /// Per-project saved state
@@ -74,14 +80,19 @@ pub fn save(
     let tabs_entries: Vec<String> = project_tabs
         .iter()
         .map(|(proj_path, pt)| {
-            let tab_details: Vec<String> = pt.tabs.iter()
-                .map(|t| format!("\"{}\"", t.detail.replace('\\', "\\\\").replace('"', "\\\"")))
+            let tab_objects: Vec<String> = pt.tabs.iter()
+                .map(|t| format!(
+                    "{{\"kind\":\"{}\",\"detail\":\"{}\",\"title\":\"{}\"}}",
+                    t.kind.replace('\\', "\\\\").replace('"', "\\\""),
+                    t.detail.replace('\\', "\\\\").replace('"', "\\\""),
+                    t.title.replace('\\', "\\\\").replace('"', "\\\""),
+                ))
                 .collect();
             format!(
                 "\"{}\":{{\"active_tab\":{},\"tabs\":[{}]}}",
                 proj_path.replace('\\', "\\\\").replace('"', "\\\""),
                 pt.active_tab,
-                tab_details.join(",")
+                tab_objects.join(",")
             )
         })
         .collect();
@@ -265,16 +276,105 @@ fn parse_project_tabs(json: &str) -> std::collections::HashMap<String, SavedProj
         // Parse active_tab from entry
         let active_tab = parse_number(entry, "active_tab").unwrap_or(0);
 
-        // Parse tabs array from entry
-        let tabs = parse_string_array_inline(entry)
-            .into_iter()
-            .map(|detail| SavedTab { detail })
-            .collect();
+        // Parse tabs array from entry — try new object form first, then legacy string form
+        let tabs = parse_tab_objects(entry)
+            .unwrap_or_else(|| {
+                parse_string_array_inline(entry)
+                    .into_iter()
+                    .map(|detail| {
+                        let kind = if detail.starts_with("preview:") { "preview" }
+                            else if detail.starts_with("image:") { "image" }
+                            else if detail.starts_with("diff:") { "diff" }
+                            else { "file" };
+                        SavedTab { kind: kind.to_string(), detail, title: String::new() }
+                    })
+                    .collect()
+            });
 
         result.insert(proj_key, SavedProjectTabs { tabs, active_tab });
     }
 
     result
+}
+
+/// Parse the `"tabs":[ {...}, {...} ]` array from a project entry where each
+/// element is a tab object `{"kind":"...","detail":"...","title":"..."}`.
+/// Returns None if the tabs array doesn't contain objects (legacy format).
+fn parse_tab_objects(entry: &str) -> Option<Vec<SavedTab>> {
+    // Locate "tabs":[
+    let key = "\"tabs\"";
+    let key_pos = entry.find(key)?;
+    let after = &entry[key_pos + key.len()..];
+    let colon = after.find(':')?;
+    let after = after[colon + 1..].trim_start();
+    if !after.starts_with('[') {
+        return None;
+    }
+    let inner_start = 1;
+    // Find matching closing bracket
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let bytes = after.as_bytes();
+    let mut close_idx = None;
+    for (i, &b) in bytes.iter().enumerate().skip(inner_start) {
+        if in_string {
+            if b == b'"' && bytes[i - 1] != b'\\' {
+                in_string = false;
+            }
+        } else {
+            match b {
+                b'"' => in_string = true,
+                b'[' | b'{' => depth += 1,
+                b']' => {
+                    if depth == 0 {
+                        close_idx = Some(i);
+                        break;
+                    }
+                    depth -= 1;
+                }
+                b'}' => depth -= 1,
+                _ => {}
+            }
+        }
+    }
+    let close = close_idx?;
+    let mut rest = after[inner_start..close].trim();
+    if rest.is_empty() {
+        return Some(Vec::new());
+    }
+    // Must be objects, not strings — if it starts with a quote, fall back to legacy parsing
+    if rest.starts_with('"') {
+        return None;
+    }
+    let mut result = Vec::new();
+    while !rest.is_empty() {
+        if !rest.starts_with('{') { break; }
+        rest = rest[1..].trim_start();
+        let obj_close = find_matching_brace(rest)?;
+        let obj = &rest[..obj_close];
+        let kind = parse_field_string(obj, "kind").unwrap_or_default();
+        let detail = parse_field_string(obj, "detail").unwrap_or_default();
+        let title = parse_field_string(obj, "title").unwrap_or_default();
+        result.push(SavedTab { kind, detail, title });
+        rest = rest[obj_close + 1..].trim_start();
+        if rest.starts_with(',') {
+            rest = rest[1..].trim_start();
+        }
+    }
+    Some(result)
+}
+
+fn parse_field_string(json: &str, key: &str) -> Option<String> {
+    let pattern = format!("\"{}\"", key);
+    let start = json.find(&pattern)?;
+    let after = &json[start + pattern.len()..];
+    let colon = after.find(':')?;
+    let after = after[colon + 1..].trim_start();
+    if !after.starts_with('"') {
+        return None;
+    }
+    let end = find_unescaped_quote(&after[1..])?;
+    Some(after[1..1 + end].replace("\\\"", "\"").replace("\\\\", "\\"))
 }
 
 fn find_unescaped_quote(s: &str) -> Option<usize> {
