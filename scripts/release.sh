@@ -5,6 +5,14 @@ set -e
 VERSION="${1:?Usage: ./scripts/release.sh <version> <description>}"
 DESCRIPTION="${2:-Release v$VERSION}"
 
+# Refuse to run with a dirty working tree — feature work must be committed
+# before releasing so the version-bump commit is clean.
+if ! git diff --quiet || ! git diff --cached --quiet; then
+    echo "ERROR: working tree is dirty. Commit or stash your changes first."
+    git status --short
+    exit 1
+fi
+
 echo "==> Bumping version to $VERSION..."
 # Update the single source of truth: workspace Cargo.toml
 sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
@@ -48,6 +56,13 @@ cp -r Forge.app "$STAGING/"
 ln -s /Applications "$STAGING/Applications"
 hdiutil create -volname "Forge v${VERSION}" -srcfolder "$STAGING" -ov -format UDZO "Forge-v${VERSION}.dmg"
 cd ../..
+
+echo "==> Committing version bump..."
+git add Cargo.toml Cargo.lock
+git commit -m "release: v$VERSION - $DESCRIPTION"
+
+echo "==> Pushing to origin..."
+git push origin HEAD
 
 echo "==> Publishing GitHub Release v$VERSION..."
 gh release create "v$VERSION" \

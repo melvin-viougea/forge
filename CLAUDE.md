@@ -67,13 +67,21 @@ All crates inherit via `version.workspace = true`. The version propagates automa
 
 When asked to release a new version:
 
-1. **Commit all pending changes** to `main`
-2. **Bump version** in `/Cargo.toml` → `[workspace.package] version = "<new>"`
-3. **Run** `./scripts/release.sh <version> "<description>"`
-   - This builds, creates .app bundle, packages DMG, and publishes to GitHub
-4. **Verify** the release at `https://github.com/melvin-viougea/forge/releases`
+1. **Commit all pending feature changes** to `main` (do NOT bump the version yourself)
+2. **Run** `./scripts/release.sh <version> "<description>"`
+3. **Verify** the release at `https://github.com/melvin-viougea/forge/releases`
 
-The script handles: `cargo build --release` -> `.app` bundle -> `Info.plist` generation -> DMG packaging -> `gh release create`
+The script handles everything end-to-end:
+- Refuses to run if the working tree is dirty
+- Bumps `Cargo.toml` to the new version
+- Runs `cargo build --release` (regenerates `Cargo.lock`)
+- Creates `.app` bundle + `Info.plist`
+- Packages DMG
+- Commits `Cargo.toml` + `Cargo.lock` as `release: vX.Y.Z - <description>`
+- Pushes to `origin`
+- Publishes the GitHub release with the DMG
+
+**Do NOT bump `Cargo.toml` manually before running the script** — the script does it. Bumping it yourself causes the version-bump commit to drift from the regenerated `Cargo.lock` and leaves uncommitted changes after the release.
 
 **Do NOT manually edit version in:**
 - `crates/*/Cargo.toml` (inherited from workspace)
